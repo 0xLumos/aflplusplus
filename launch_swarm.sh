@@ -483,9 +483,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // the highest-yield attack surfaces (BrokenType found 100s of bugs).
     case 10: {
         auto fontData = SkData::MakeWithoutCopy(data, size);
-        auto stream = SkMemoryStream::Make(fontData);
-        auto fontMgr = SkFontMgr::RefDefault();
-        auto typeface = fontMgr->makeFromStream(std::move(stream));
+        auto typeface = SkTypeface::MakeFromData(fontData);
         if (typeface) {
             SkFont font(typeface);
             font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 200));
