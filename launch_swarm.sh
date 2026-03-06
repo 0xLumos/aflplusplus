@@ -484,7 +484,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     case 10: {
         auto fontData = SkData::MakeWithoutCopy(data, size);
         auto stream = SkMemoryStream::Make(fontData);
-        auto typeface = SkTypeface::MakeFromStream(std::move(stream));
+        auto fontMgr = SkFontMgr::RefDefault();
+        auto typeface = fontMgr->makeFromStream(std::move(stream));
         if (typeface) {
             SkFont font(typeface);
             font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 200));
@@ -510,7 +511,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
             // Get glyph IDs (exercises cmap table parsing)
             SkGlyphID glyphs[10];
-            font.textToGlyphs("ABCDEFGHIJ", 10, SkTextEncoding::kUTF8, glyphs, 10);
+            font.textToGlyphs("ABCDEFGHIJ", 10, SkTextEncoding::kUTF8, SkSpan(glyphs, 10));
 
             // Draw with different sizes to stress glyph cache
             for (int sz = 8; sz <= 72 && fdp.remaining_bytes() > 4; sz += 8) {
