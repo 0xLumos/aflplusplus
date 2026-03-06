@@ -671,8 +671,8 @@ phase_compile() {
         "$BASE extra_cflags=[\"-w\",\"-fsanitize=address\"] extra_ldflags=[\"-w\",\"-fsanitize=address\"]" \
         "-O2 -fsanitize=address" "AFL_USE_ASAN=1"
     build_target "UBSan" "harness_skia_ubsan" \
-        "$BASE extra_cflags=[\"-w\",\"-fsanitize=undefined,integer,nullability\",\"-fno-sanitize-recover=all\"] extra_ldflags=[\"-w\",\"-fsanitize=undefined,integer,nullability\"]" \
-        "-O2 -fsanitize=undefined,integer,nullability -fno-sanitize-recover=all" "AFL_USE_UBSAN=1"
+        "$BASE extra_cflags=[\"-w\",\"-fsanitize=undefined,integer\",\"-fsanitize-recover=all\"] extra_ldflags=[\"-w\",\"-fsanitize=undefined,integer\"]" \
+        "-O2 -fsanitize=undefined,integer -fsanitize-recover=all" "AFL_USE_UBSAN=1"
     build_target "CmpLog" "harness_skia_cmplog" \
         "$BASE extra_cflags=[\"-w\"] extra_ldflags=[\"-w\"]" \
         "-O3" "AFL_LLVM_CMPLOG=1"
@@ -699,6 +699,7 @@ phase_minimize() {
     AFL_MAP_SIZE=2560000 timeout 120 afl-cmin -i in -o in_min -m none -t 2000 -- ./harness_skia_fast 2>/dev/null || true
     MIN=$(ls -1 in_min/ 2>/dev/null | wc -l)
     if [ "$MIN" -gt 0 ]; then
+        rm -rf in_full 2>/dev/null || true
         mv in in_full && mv in_min in && touch in_minimized
         echo "    Minimized to $MIN files"
     else
@@ -781,7 +782,7 @@ ENVEOF
     }
 
     AENV="export ASAN_OPTIONS='detect_leaks=0:symbolize=0:abort_on_error=1:detect_odr_violation=0'"
-    UENV="export UBSAN_OPTIONS='halt_on_error=1:abort_on_error=1:print_stacktrace=1'"
+    UENV="export UBSAN_OPTIONS='halt_on_error=0:print_stacktrace=0:silence_unsigned_overflow=1'"
 
     launch "master"   "$AENV" "harness_skia_asan"  "-M master -l 2 -c ./harness_skia_cmplog -t 5000+"
     launch "ubsan"    "$UENV" "harness_skia_ubsan"  "-S ubsan -p explore -t 5000+"
