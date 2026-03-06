@@ -752,7 +752,7 @@ phase_launch() {
     cd "$WORKDIR"
 
     # Kill everything cleanly
-    pkill -9 afl-fuzz 2>/dev/null; sleep 1
+    pkill -9 afl-fuzz 2>/dev/null || true; sleep 1
     screen -wipe 2>/dev/null || true
 
     # Build dictionary flag (use both manual + auto if available)
