@@ -1,22 +1,23 @@
 #!/bin/bash
-
 # =============================================================================
-# SKIA AFL++ CVE-HUNTER v7.0
+# SKIA AFL++ FUZZER v7.0
 #
-# CVE-ADAPTED FUZZER: Targets the exact code patterns that produced
-# real-world Skia CVEs exploited in the wild.
+# Methodology-driven harness: Applies the root cause patterns that produce
+# real Skia vulnerabilities. Each target exercises a PATTERN, not a PoC.
 #
-# CVE ATTACK SURFACE MAPPING:
-#   Target 0: Canvas paths/shapes     → CVE-2024-8198, CVE-2024-8636
-#   Target 1: Gradient shaders        → CVE-2025-0436 (int overflow in rendering)
-#   Target 2: Image filters (compose) → CVE-2024-1283 (heap OOB)
-#   Target 3: Image decode (codecs)   → CVE-2024-8636 (heap buffer overflow)
-#   Target 4: PathOps boolean ops     → CVE-2023-2136 pattern (int overflow)
-#   Target 5: SkPicture deserialize   → CVE-2025-0444 (UAF in object lifecycle)
-#   Target 6: SkVertices/Mesh ops     → CVE-2023-6345 (vertex count overflow)
-#   Target 7: Text + SkMatrix math    → CVE-2026-3538 (int overflow in math)
-#   Target 8: SkShader lifecycle       → CVE-2025-0444 (use-after-free)
-#   Target 9: Extreme geometry stress  → CVE-2024-8198 (bounds checking)
+# PATTERNS APPLIED (from studying Skia CVE root causes):
+#   1. ACCUMULATION OVERFLOW: Repeat operations many times so internal
+#      counters (vertex count, index count, run count) overflow INT32
+#   2. EXTREME COORDINATES: Push coordinates to ±10^7 to trigger integer
+#      overflow in rasterizer math (bounds calcs, scan conversion)
+#   3. DEEP COMPOSITION: Chain N filters/layers/operations so allocation
+#      size calculations overflow or mismatch actual data written
+#   4. CODEC MULTI-PATH: Exercise full/incremental/scaled/subset decode
+#      paths — each has different allocation & bounds logic
+#   5. OBJECT LIFECYCLE: Create-use-release-reuse patterns that expose
+#      dangling references from refcounting edge cases
+#   6. DEGENERATE TRANSFORMS: Matrix chains that accumulate extreme values
+#      causing determinant/inversion math to overflow
 #
 # USAGE:
 #   ./fuzz.sh              # Full: build + launch
@@ -30,7 +31,7 @@ MODE="${1:-full}"
 WORKDIR="$HOME/skia_fuzzing"
 
 echo "================================================================"
-echo "[*] SKIA CVE-HUNTER v7.0 (CVE-Adapted Harness)"
+echo "[*] SKIA FUZZER v7.0 (Methodology-Driven)"
 echo "    Mode: $MODE"
 echo "================================================================"
 
@@ -41,7 +42,6 @@ phase_system_tune() {
     echo "[+] Phase 1: System Tuning..."
     echo core | sudo tee /proc/sys/kernel/core_pattern > /dev/null
     echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true
-    # STABILITY FIX: Disable ASLR
     echo 0 | sudo tee /proc/sys/kernel/randomize_va_space > /dev/null
     echo "    ASLR: DISABLED | CPU: PERFORMANCE"
 
@@ -71,33 +71,26 @@ phase_workspace() {
 }
 
 # =====================================================================
-# PHASE 3: CVE-ADAPTED HARNESS
-#
-# Each target maps to vulnerability patterns from real Skia CVEs.
-# The harness specifically exercises the code paths that were
-# historically vulnerable.
+# PHASE 3: METHODOLOGY-DRIVEN HARNESS
 # =====================================================================
 phase_harness() {
-    echo "[+] Phase 3: Writing CVE-adapted harness..."
+    echo "[+] Phase 3: Writing methodology-driven harness..."
     cat << 'HARNESS_EOF' > "$WORKDIR/skia_harness.cc"
-// ==========================================================================
-// SKIA CVE-HUNTER HARNESS v7.0
+// =====================================================================
+// Skia Fuzz Harness v7.0 — Methodology-Driven
 //
-// This harness targets the exact vulnerability patterns found in real-world
-// Skia CVEs that were actively exploited in the wild.
-//
-// CVE MAPPING:
-//   [0] Canvas paths     → CVE-2024-8198/8636 (heap OOB from bounds errors)
-//   [1] Gradients        → CVE-2025-0436 (integer overflow in rendering)
-//   [2] Image filters    → CVE-2024-1283 (heap buffer overflow)
-//   [3] Image decode     → CVE-2024-8636 (codec parsing heap overflow)
-//   [4] PathOps          → CVE-2023-2136 pattern (integer overflow)
-//   [5] SkPicture        → CVE-2025-0444 (deserialize UAF)
-//   [6] SkVertices/Mesh  → CVE-2023-6345 (vertex/index count overflow)
-//   [7] Text + Matrix    → CVE-2026-3538 (integer overflow in math)
-//   [8] Shader lifecycle → CVE-2025-0444 (use-after-free on freed shaders)
-//   [9] Extreme geometry → CVE-2024-8198 (huge coords, extreme transforms)
-// ==========================================================================
+// Targets the CODE PATTERNS that historically produce Skia vulnerabilities:
+//   [0] Extreme path rendering    — overflow in rasterizer math
+//   [1] Gradient stress           — overflow in color interpolation math
+//   [2] Deep filter chains        — allocation size miscalculation
+//   [3] Codec multi-path decode   — parser state machine edge cases
+//   [4] Repeated draw operations  — internal counter accumulation overflow
+//   [5] SkPicture round-trip      — deserialize/replay lifecycle issues
+//   [6] SkVertices repetition     — vertex count accumulation overflow
+//   [7] Degenerate matrix chains  — math overflow in transform pipeline
+//   [8] Object lifecycle stress   — refcount and dangling reference edges
+//   [9] Nested clip + layer stack — layer allocation bounds errors
+// =====================================================================
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -121,12 +114,10 @@ phase_harness() {
 #include "include/core/SkMatrix.h"
 #include "include/core/SkBitmap.h"
 #include "include/core/SkVertices.h"
-#include "include/core/SkMesh.h"
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
 #include "include/codec/SkCodec.h"
-#include "include/pathops/SkPathOps.h"
 
 #include <unistd.h>
 #include <fuzzer/FuzzedDataProvider.h>
@@ -134,7 +125,6 @@ phase_harness() {
 #include <cstring>
 #include <vector>
 #include <cstdint>
-#include <limits>
 
 __AFL_FUZZ_INIT();
 
@@ -144,7 +134,7 @@ int main() {
     __AFL_INIT();
     unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
 
-    // Cache warmup for stability
+    // Warm all internal caches ONCE so iteration 1 == iteration N
     {
         auto w = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(256, 256));
         if (w) {
@@ -174,24 +164,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     SkCanvas* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
 
-    // 10 targets — each maps to a CVE pattern
     uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 9);
 
     switch (target) {
 
-    // ===== TARGET 0: Canvas + Paths =====
-    // CVE-2024-8198/8636: Heap buffer overflow from insufficient bounds
-    // checking during graphics processing. Triggered by complex clipping,
-    // nested saveLayer, and extreme path coordinates.
+    // ===== [0] EXTREME PATH RENDERING =====
+    // Pattern: extreme coordinates stress integer math in scan conversion,
+    // anti-aliasing, and bounds calculations. The rasterizer converts
+    // float coords to fixed-point integers internally — extremes overflow.
     case 0: {
         SkPaint paint;
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-        paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 100));
+        paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 1e4f));
         paint.setBlendMode(static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
 
-        // CVE pattern: extreme transforms that stress bounds calculations
         canvas->save();
         if (fdp.ConsumeBool()) canvas->scale(
             fdp.ConsumeFloatingPointInRange<float>(0.001f, 1000.0f),
@@ -205,64 +193,55 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         builder.setFillType(static_cast<SkPathFillType>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3)));
         int nv = fdp.ConsumeIntegralInRange<int>(1, 80);
         for (int i = 0; i < nv && fdp.remaining_bytes() > 12; ++i) {
-            float x = fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f);
-            float y = fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f);
+            float x = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
+            float y = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
             switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 5)) {
                 case 0: builder.moveTo(x, y); break;
                 case 1: builder.lineTo(x, y); break;
-                case 2: builder.quadTo(fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f),
-                                       fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f), x, y); break;
-                case 3: builder.cubicTo(fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e6f,1e6f), x, y); break;
+                case 2: builder.quadTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
+                                       fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
+                case 3: builder.cubicTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
                 case 4: builder.conicTo(x, y, x+10, y+10,
                             fdp.ConsumeFloatingPointInRange<float>(0.001f, 100.0f)); break;
                 case 5: builder.close(); break;
             }
         }
         SkPath path = builder.detach();
-
-        // CVE pattern: nested saveLayer + clip (stresses buffer allocation)
-        int depth = fdp.ConsumeIntegralInRange<int>(1, 8);
-        for (int d = 0; d < depth && fdp.remaining_bytes() > 4; ++d) {
-            canvas->saveLayer(nullptr, &paint);
-            canvas->clipPath(path, fdp.ConsumeBool());
-        }
         canvas->drawPath(path, paint);
+        canvas->save();
+        canvas->clipPath(path, fdp.ConsumeBool());
         canvas->drawPaint(paint);
-        for (int d = 0; d < depth; ++d) canvas->restore();
-
+        canvas->restore();
+        (void)path.getBounds();
+        (void)path.computeTightBounds();
         canvas->restore();
         break;
     }
 
-    // ===== TARGET 1: Gradient Shaders =====
-    // CVE-2025-0436: Integer overflow in rendering math when processing
-    // gradients with many color stops and extreme positions.
+    // ===== [1] GRADIENT STRESS =====
+    // Pattern: many color stops with extreme point distances stress the
+    // interpolation math. Gradient ramps are computed with fixed-point
+    // arithmetic — many stops + extreme range → accumulation overflow.
     case 1: {
         SkPaint paint;
         paint.setAntiAlias(fdp.ConsumeBool());
 
-        // CVE pattern: many color stops → more integer math → more overflow risk
         int nc = fdp.ConsumeIntegralInRange<int>(2, 16);
         std::vector<SkColor4f> colors;
-        std::vector<float> positions;
-        for (int i = 0; i < nc && fdp.remaining_bytes() > 16; ++i) {
+        for (int i = 0; i < nc && fdp.remaining_bytes() > 16; ++i)
             colors.push_back({fdp.ConsumeFloatingPointInRange<float>(0,1),
                               fdp.ConsumeFloatingPointInRange<float>(0,1),
                               fdp.ConsumeFloatingPointInRange<float>(0,1),
                               fdp.ConsumeFloatingPointInRange<float>(0,1)});
-            // Fuzz positions — unsorted/extreme positions stress gradient math
-            positions.push_back(fdp.ConsumeFloatingPointInRange<float>(-1.0f, 2.0f));
-        }
         if (colors.size() < 2) break;
 
         SkTileMode tm = static_cast<SkTileMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3));
         SkGradient::Colors gc(SkSpan(colors.data(), colors.size()), tm);
         SkGradient grad(gc, {});
 
-        // CVE pattern: extreme point distances → integer overflow in dimension calcs
         SkPoint pts[] = {
             {fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
              fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)},
@@ -270,32 +249,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
              fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)}
         };
 
-        // Test all gradient types with same extreme params
         uint8_t gt = fdp.ConsumeIntegralInRange<uint8_t>(0, 2);
         if (gt == 0) paint.setShader(SkShaders::LinearGradient(pts, grad));
-        else if (gt == 1) {
-            // CVE: very large or very small radius
-            float r = fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e6f);
-            paint.setShader(SkShaders::RadialGradient(pts[0], r, grad));
-        } else {
-            paint.setShader(SkShaders::SweepGradient(pts[0], grad));
-        }
+        else if (gt == 1) paint.setShader(SkShaders::RadialGradient(pts[0],
+            fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e6f), grad));
+        else paint.setShader(SkShaders::SweepGradient(pts[0], grad));
 
-        // Draw with gradient applied to various ops
         canvas->drawPaint(paint);
         canvas->drawRect(SkRect::MakeLTRB(-1e4f, -1e4f, 1e4f, 1e4f), paint);
         break;
     }
 
-    // ===== TARGET 2: Image Filters (deep composition) =====
-    // CVE-2024-1283: Heap buffer overflow from deeply composed/chained
-    // image filters that cause miscalculated allocation sizes.
+    // ===== [2] DEEP FILTER COMPOSITION =====
+    // Pattern: deeply chained image filters. Each composition level adds
+    // a bounds expansion step — the final bounds calculation can overflow,
+    // causing the output buffer to be smaller than what gets written.
     case 2: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
 
-        // CVE pattern: build a DEEP chain of composed filters
-        // Each composition adds overhead → can cause allocation miscalcs
         sk_sp<SkImageFilter> chain = nullptr;
         int depth = fdp.ConsumeIntegralInRange<int>(2, 12);
         for (int i = 0; i < depth && fdp.remaining_bytes() > 8; ++i) {
@@ -321,12 +293,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             }
             chain = filter;
         }
-
-        // Apply deeply chained filter and draw
         paint.setImageFilter(chain);
         canvas->drawRect(SkRect::MakeWH(kW, kH), paint);
 
-        // CVE pattern: also merge multiple filter chains
         if (fdp.remaining_bytes() > 8) {
             auto blur = SkImageFilters::Blur(
                 fdp.ConsumeFloatingPointInRange<float>(1, 30),
@@ -338,28 +307,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== TARGET 3: Image Decode =====
-    // CVE-2024-8636: Heap buffer overflow in codec parsing.
-    // This is the #1 source of Chrome CVEs from Skia.
-    // Feed raw fuzzed bytes to all codec paths.
+    // ===== [3] CODEC MULTI-PATH DECODE =====
+    // Pattern: image decoders have multiple internal paths (full, incremental,
+    // scaled, subset). Each path calculates buffer sizes differently.
+    // Feeding fuzzed data exercises parser state machines where one path
+    // allocates X bytes but another writes X+N.
     case 3: {
         auto skdata = SkData::MakeWithoutCopy(data, size);
-
-        // Try decoding as image (PNG, JPEG, WebP, BMP, GIF, ICO, WBMP)
         auto codec = SkCodec::MakeFromData(skdata);
         if (codec) {
             auto info = codec->getInfo();
-            // Limit to prevent OOM (but still allow medium sizes for OOB bugs)
             if (info.width() <= 4096 && info.height() <= 4096 &&
                 (int64_t)info.width() * info.height() <= 4*1024*1024) {
 
-                // Full decode
+                // Path A: full decode
                 SkBitmap bm;
                 bm.allocPixels(info.makeColorType(kN32_SkColorType));
                 memset(bm.getPixels(), 0, bm.computeByteSize());
                 codec->getPixels(bm.pixmap());
 
-                // Incremental decode (different code path)
+                // Path B: incremental decode (different state machine)
                 auto c2 = SkCodec::MakeFromData(skdata);
                 if (c2) {
                     SkBitmap bm2;
@@ -369,7 +336,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                     c2->incrementalDecode();
                 }
 
-                // Scaled decode (yet another code path)
+                // Path C: scaled decode (different allocation calc)
                 auto c3 = SkCodec::MakeFromData(skdata);
                 if (c3) {
                     auto sd = c3->getScaledDimensions(0.5f);
@@ -383,7 +350,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                     }
                 }
 
-                // Subsetting (different allocation path)
+                // Path D: subset decode (different bounds logic)
                 auto c4 = SkCodec::MakeFromData(skdata);
                 if (c4 && info.width() > 2 && info.height() > 2) {
                     SkIRect subset = SkIRect::MakeWH(info.width()/2, info.height()/2);
@@ -401,65 +368,45 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== TARGET 4: PathOps (boolean operations) =====
-    // CVE-2023-2136 pattern: Integer overflow in complex path math.
-    // AlmostBetweenUlps, AAHairLineOp, path simplification all had overflows.
+    // ===== [4] REPEATED DRAW ACCUMULATION =====
+    // Pattern: internal operation batching accumulates counters.
+    // If you draw the same thing N times, the renderer may try to combine
+    // them — the combined count can overflow int32 when N is large enough.
+    // Also stresses memory allocator reuse patterns.
     case 4: {
-        auto bp = [&fdp]() -> SkPath {
-            SkPathBuilder b;
-            b.setFillType(static_cast<SkPathFillType>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3)));
-            int n = fdp.ConsumeIntegralInRange<int>(1, 40);
-            for (int i = 0; i < n && fdp.remaining_bytes() > 8; ++i) {
-                // CVE pattern: use extreme coordinates to trigger overflows
-                float x = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
-                float y = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
-                switch(fdp.ConsumeIntegralInRange<uint8_t>(0, 4)) {
-                    case 0: b.moveTo(x, y); break;
-                    case 1: b.lineTo(x, y); break;
-                    case 2: b.quadTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                     fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
-                    case 3: b.cubicTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                      fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                      fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                      fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
-                    case 4: b.close(); break;
-                }
+        SkPaint paint;
+        paint.setAntiAlias(fdp.ConsumeBool());
+        paint.setColor(fdp.ConsumeIntegral<SkColor>());
+        paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
+
+        int reps = fdp.ConsumeIntegralInRange<int>(50, 500);
+        for (int i = 0; i < reps && fdp.remaining_bytes() > 4; ++i) {
+            float x = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
+            float y = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
+            float w = fdp.ConsumeFloatingPointInRange<float>(1, 200);
+            float h = fdp.ConsumeFloatingPointInRange<float>(1, 200);
+            switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 3)) {
+                case 0: canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint); break;
+                case 1: canvas->drawCircle(x, y, w, paint); break;
+                case 2: canvas->drawOval(SkRect::MakeXYWH(x, y, w, h), paint); break;
+                case 3: canvas->drawLine(x, y, x+w, y+h, paint); break;
             }
-            return b.detach();
-        };
-
-        // Multiple paths for boolean ops — more complex = more overflow risk
-        SkPath p1 = bp(), p2 = bp(), p3 = bp(), result;
-
-        Simplify(p1, &result);
-        SkPathOp ops[] = {kUnion_SkPathOp, kIntersect_SkPathOp, kDifference_SkPathOp,
-                          kXOR_SkPathOp, kReverseDifference_SkPathOp};
-        for (auto op : ops) {
-            if (fdp.remaining_bytes() < 4) break;
-            Op(p1, p2, op, &result);
         }
-        // Chain: result of Op becomes input to next Op
-        if (fdp.remaining_bytes() > 4) Op(result, p3, kUnion_SkPathOp, &result);
-
         break;
     }
 
-    // ===== TARGET 5: SkPicture Deserialization =====
-    // CVE-2025-0444: Use-after-free in Skia graphics objects during
-    // rendering. SkPicture deserialization creates complex object graphs
-    // where lifetime management bugs emerge.
+    // ===== [5] SkPicture ROUND-TRIP =====
+    // Pattern: deserialization creates complex object graphs from untrusted
+    // data. Re-serializing and re-deserializing stresses object lifetime
+    // management and reference counting across the entire pipeline.
     case 5: {
-        // Feed raw fuzzed data as SKP format — exercises the entire
-        // deserialization pipeline where UAF/OOB bugs hide
         auto fuzzData = SkData::MakeWithoutCopy(data, size);
         auto pic = SkPicture::MakeFromData(fuzzData.get());
         if (pic) {
-            // Playback on canvas (triggers all recorded operations)
             canvas->clear(SK_ColorTRANSPARENT);
             pic->playback(canvas);
 
-            // CVE pattern: serialize then deserialize again
-            // (roundtrip stress tests object lifetime management)
+            // Round-trip: serialize → deserialize → playback again
             auto reserialized = pic->serialize();
             if (reserialized) {
                 auto pic2 = SkPicture::MakeFromData(reserialized.get());
@@ -469,61 +416,55 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 }
             }
         }
+
+        // Also record + playback fuzz-controlled operations
+        if (fdp.remaining_bytes() > 32) {
+            SkPictureRecorder rec;
+            SkCanvas* rc = rec.beginRecording(SkRect::MakeWH(256, 256));
+            SkPaint p;
+            int ops = fdp.ConsumeIntegralInRange<int>(1, 20);
+            for (int i = 0; i < ops && fdp.remaining_bytes() > 16; ++i) {
+                p.setColor(fdp.ConsumeIntegral<SkColor>());
+                rc->drawRect(SkRect::MakeLTRB(
+                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
+                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
+                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
+                    fdp.ConsumeFloatingPointInRange<float>(-500,500)), p);
+            }
+            auto recorded = rec.finishRecordingAsPicture();
+            recorded->playback(canvas);
+            recorded->serialize();
+        }
         break;
     }
 
-    // ===== TARGET 6: SkVertices / Custom Mesh =====
-    // CVE-2023-6345 (CVSS 9.6): Integer overflow in MeshOp::onCombineIfPossible
-    // When fVertexCount + that->fVertexCount overflows INT32_MAX, the allocated
-    // buffer is too small → out-of-bounds write. This was actively exploited
-    // in the wild for sandbox escape.
+    // ===== [6] SkVertices REPETITION =====
+    // Pattern: drawing the same SkVertices object many times. The renderer
+    // may combine/batch these operations, accumulating vertex and index
+    // counts. If counts overflow int32, the allocated buffer is undersized
+    // but the write uses the full (overflowed) count → OOB write.
     case 6: {
-        // Pattern: create SkVertices with carefully chosen vertex counts
-        // that could trigger integer overflow in combine operations.
-
-        // Fuzz vertex count — try values near INT32_MAX to trigger overflow
-        int vertexCount = fdp.ConsumeIntegralInRange<int>(3, 65536);
-        int indexCount = fdp.ConsumeBool() ? fdp.ConsumeIntegralInRange<int>(3, 65536) : 0;
-
+        int vertexCount = fdp.ConsumeIntegralInRange<int>(3, 2048);
         std::vector<SkPoint> positions(vertexCount);
         std::vector<SkColor> colors(vertexCount);
-        std::vector<SkPoint> texCoords(vertexCount);
-        std::vector<uint16_t> indices;
 
         for (int i = 0; i < vertexCount && fdp.remaining_bytes() > 8; ++i) {
-            positions[i] = {fdp.ConsumeFloatingPointInRange<float>(-1000, 1000),
-                            fdp.ConsumeFloatingPointInRange<float>(-1000, 1000)};
+            positions[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                            fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
             colors[i] = fdp.ConsumeIntegral<SkColor>();
-            texCoords[i] = {fdp.ConsumeFloatingPointInRange<float>(0, 256),
-                            fdp.ConsumeFloatingPointInRange<float>(0, 256)};
         }
 
-        if (indexCount > 0) {
-            indices.resize(indexCount);
-            for (int i = 0; i < indexCount && fdp.remaining_bytes() > 2; ++i)
-                indices[i] = fdp.ConsumeIntegralInRange<uint16_t>(0, vertexCount - 1);
-        }
-
-        // Create SkVertices with triangle modes
         SkVertices::VertexMode vmode = static_cast<SkVertices::VertexMode>(
             fdp.ConsumeIntegralInRange<uint8_t>(0, 2));
-
-        sk_sp<SkVertices> verts;
-        if (indexCount > 0 && !indices.empty()) {
-            verts = SkVertices::MakeCopy(vmode, vertexCount,
-                positions.data(), texCoords.data(), colors.data(),
-                indexCount, indices.data());
-        } else {
-            verts = SkVertices::MakeCopy(vmode, vertexCount,
-                positions.data(), texCoords.data(), colors.data());
-        }
+        auto verts = SkVertices::MakeCopy(vmode, vertexCount,
+            positions.data(), nullptr, colors.data());
 
         if (verts) {
             SkPaint paint;
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
-            // CVE-2023-6345 pattern: draw vertices multiple times to trigger
-            // onCombineIfPossible which can overflow vertex counts
-            for (int i = 0; i < fdp.ConsumeIntegralInRange<int>(1, 8); ++i) {
+            // Draw MANY times to trigger internal batching/combining
+            int reps = fdp.ConsumeIntegralInRange<int>(10, 200);
+            for (int i = 0; i < reps; ++i) {
                 canvas->drawVertices(verts,
                     static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)), paint);
             }
@@ -531,31 +472,27 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== TARGET 7: Text + SkMatrix (integer overflow in math) =====
-    // CVE-2026-3538: Integer overflow in Skia allowing OOB memory access.
-    // Matrix operations involve heavy math that can overflow:
-    //   - Matrix inversion (determinant calculation)
-    //   - Matrix concatenation chains (accumulation overflow)
-    //   - Point mapping through degenerate matrices
+    // ===== [7] DEGENERATE MATRIX CHAINS =====
+    // Pattern: concatenating many matrices with extreme values. The
+    // accumulated matrix values can overflow float precision, and when
+    // used for point mapping or glyph positioning, produce coordinates
+    // that overflow fixed-point integers in downstream rasterizer code.
     case 7: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setAntiAlias(fdp.ConsumeBool());
 
-        // CVE pattern: construct matrices with values near integer boundaries
-        SkMatrix m;
-        m.setAll(fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f));
+        SkMatrix acc;
+        acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
+                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f));
 
-        // CVE pattern: chain matrix concatenations (accumulation overflow)
-        SkMatrix acc = m;
         int chainLen = fdp.ConsumeIntegralInRange<int>(2, 20);
         for (int i = 0; i < chainLen && fdp.remaining_bytes() > 36; ++i) {
             SkMatrix m2;
@@ -571,11 +508,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             acc = SkMatrix::Concat(acc, m2);
         }
 
-        // Invert the chained matrix (determinant can overflow)
         SkMatrix inv;
         (void)acc.invert(&inv);
 
-        // Map many points through degenerate matrix
         std::vector<SkPoint> pts(fdp.ConsumeIntegralInRange<int>(1, 100));
         for (auto& p : pts)
             p = {fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
@@ -583,7 +518,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         std::vector<SkPoint> dst(pts.size());
         acc.mapPoints(SkSpan(dst), SkSpan(pts));
 
-        // Draw text with this extreme matrix
         canvas->setMatrix(acc);
         SkFont font;
         font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 500));
@@ -597,15 +531,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== TARGET 8: Shader/Paint Lifecycle (Use-After-Free) =====
-    // CVE-2025-0444: UAF in Skia graphics objects. This target stresses
-    // object lifecycle by creating, using, nullifying, and reusing
-    // shaders and paint objects to expose dangling references.
+    // ===== [8] OBJECT LIFECYCLE STRESS =====
+    // Pattern: rapid create-assign-release-reuse of Skia objects (shaders,
+    // images, paints). Exposes refcounting edge cases where an object A
+    // is freed while object B still holds a raw pointer to A's internals.
     case 8: {
-        // Create multiple shaders, assign to paints, draw, then
-        // release shaders while paints might still reference them
-
-        // Shader 1: gradient
         SkPoint pts[] = {
             {fdp.ConsumeFloatingPointInRange<float>(0,256),
              fdp.ConsumeFloatingPointInRange<float>(0,256)},
@@ -613,47 +543,39 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
              fdp.ConsumeFloatingPointInRange<float>(0,256)}
         };
         SkColor4f c1[] = {
-            {fdp.ConsumeFloatingPointInRange<float>(0,1), fdp.ConsumeFloatingPointInRange<float>(0,1),
+            {fdp.ConsumeFloatingPointInRange<float>(0,1),
+             fdp.ConsumeFloatingPointInRange<float>(0,1),
              fdp.ConsumeFloatingPointInRange<float>(0,1), 1.0f},
-            {fdp.ConsumeFloatingPointInRange<float>(0,1), fdp.ConsumeFloatingPointInRange<float>(0,1),
+            {fdp.ConsumeFloatingPointInRange<float>(0,1),
+             fdp.ConsumeFloatingPointInRange<float>(0,1),
              fdp.ConsumeFloatingPointInRange<float>(0,1), 1.0f}
         };
         SkGradient::Colors gc(SkSpan(c1, 2), SkTileMode::kClamp);
 
-        sk_sp<SkShader> shader1, shader2;
+        sk_sp<SkShader> shader1;
         {
             SkGradient grad(gc, {});
             shader1 = SkShaders::LinearGradient(pts, grad);
         }
 
-        // Shader 2: color filter shader
-        auto cf = SkColorFilters::Blend(fdp.ConsumeIntegral<SkColor>(),
-            static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
-
-        // Stress lifecycle: assign, draw, reassign, draw, null, draw
         SkPaint paint1, paint2;
         paint1.setShader(shader1);
-        paint2.setShader(shader1);  // Two paints share same shader
-
+        paint2.setShader(shader1);
         canvas->drawRect(SkRect::MakeWH(100, 100), paint1);
         canvas->drawRect(SkRect::MakeXYWH(50, 50, 100, 100), paint2);
 
-        // Now release the original shader reference
+        // Release original ref — paints still hold refs
         shader1.reset();
-
-        // paint1 and paint2 still hold refs — draw should still work
         canvas->drawRect(SkRect::MakeWH(200, 200), paint1);
 
-        // Set null shader and try drawing
+        // Null one paint's shader, keep the other
         paint1.setShader(nullptr);
         paint1.setColor(fdp.ConsumeIntegral<SkColor>());
         canvas->drawRect(SkRect::MakeWH(100, 100), paint1);
-
-        // paint2 still has the old shader — cross-draw
         canvas->drawRect(SkRect::MakeWH(50, 50), paint2);
 
-        // Rapid create-use-destroy cycle
-        for (int i = 0; i < fdp.ConsumeIntegralInRange<int>(1, 10) && fdp.remaining_bytes() > 16; ++i) {
+        // Rapid lifecycle churn
+        for (int i = 0; i < fdp.ConsumeIntegralInRange<int>(1, 20) && fdp.remaining_bytes() > 16; ++i) {
             SkColor4f tc[] = {
                 {fdp.ConsumeFloatingPointInRange<float>(0,1),
                  fdp.ConsumeFloatingPointInRange<float>(0,1),
@@ -673,78 +595,55 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== TARGET 9: Extreme Geometry Stress =====
-    // CVE-2024-8198: Heap buffer overflow from insufficient boundary
-    // validation. This target pushes extreme coordinates, sizes, and
-    // combinations through all drawing operations.
+    // ===== [9] NESTED CLIP + LAYER STACK =====
+    // Pattern: deeply nested saveLayer + clipPath/clipRect. Each layer
+    // allocates a temporary surface — deep nesting stresses the layer
+    // stack's bounds calculation, and clipping with complex paths through
+    // many layers can cause allocation size vs actual draw size mismatch.
     case 9: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setAntiAlias(fdp.ConsumeBool());
-        paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-        paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 1e4f));
 
-        // Extreme coordinates for all drawing ops
-        float HUGE = 1e7f;
+        int depth = fdp.ConsumeIntegralInRange<int>(3, 15);
+        for (int d = 0; d < depth && fdp.remaining_bytes() > 20; ++d) {
+            SkPaint layerPaint;
+            layerPaint.setAlphaf(fdp.ConsumeFloatingPointInRange<float>(0.1f, 1.0f));
+            layerPaint.setBlendMode(static_cast<SkBlendMode>(
+                fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
 
-        // Extremes: huge rectangle
-        canvas->drawRect(SkRect::MakeLTRB(
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE)), paint);
+            canvas->saveLayer(nullptr, &layerPaint);
 
-        // Extremes: huge rounded rect
-        SkRRect rr;
-        rr.setRectXY(SkRect::MakeLTRB(
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE)),
-            fdp.ConsumeFloatingPointInRange<float>(0, 1e5f),
-            fdp.ConsumeFloatingPointInRange<float>(0, 1e5f));
-        canvas->drawRRect(rr, paint);
+            // Alternate between rect and path clipping
+            if (fdp.ConsumeBool()) {
+                canvas->clipRect(SkRect::MakeLTRB(
+                    fdp.ConsumeFloatingPointInRange<float>(-200, 200),
+                    fdp.ConsumeFloatingPointInRange<float>(-200, 200),
+                    fdp.ConsumeFloatingPointInRange<float>(-200, 400),
+                    fdp.ConsumeFloatingPointInRange<float>(-200, 400)));
+            } else {
+                SkPathBuilder cb;
+                cb.moveTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
+                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
+                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
+                cb.close();
+                canvas->clipPath(cb.detach(), fdp.ConsumeBool());
+            }
 
-        // Extremes: circle with huge radius
-        canvas->drawCircle(
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(0, HUGE), paint);
-
-        // Extremes: line
-        canvas->drawLine(
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE), paint);
-
-        // Extremes: oval
-        canvas->drawOval(SkRect::MakeLTRB(
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE),
-            fdp.ConsumeFloatingPointInRange<float>(-HUGE, HUGE)), paint);
-
-        // Extremes: arc
-        canvas->drawArc(SkRect::MakeLTRB(
-            fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
-            fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
-            fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
-            fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)),
-            fdp.ConsumeFloatingPointInRange<float>(0, 360),
-            fdp.ConsumeFloatingPointInRange<float>(0, 360),
-            fdp.ConsumeBool(), paint);
-
-        // Dash path effect with extreme intervals
-        if (fdp.remaining_bytes() > 16) {
-            float intervals[] = {
-                fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e5f),
-                fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e5f)
-            };
-            paint.setPathEffect(SkDashPathEffect::Make(SkSpan(intervals, 2),
-                fdp.ConsumeFloatingPointInRange<float>(0, 1e5f)));
-            canvas->drawRect(SkRect::MakeWH(200, 200), paint);
+            // Draw something at each layer level
+            paint.setColor(fdp.ConsumeIntegral<SkColor>());
+            canvas->drawRect(SkRect::MakeWH(
+                fdp.ConsumeFloatingPointInRange<float>(10, 300),
+                fdp.ConsumeFloatingPointInRange<float>(10, 300)), paint);
         }
+        // Unwind all layers
+        for (int d = 0; d < depth; ++d) canvas->restore();
+
+        // Draw on top of unwound stack
+        canvas->drawPaint(paint);
         break;
     }
 
@@ -752,36 +651,28 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     return 0;
 }
 HARNESS_EOF
-    echo "    Harness: 10 CVE-targeted attack surfaces"
+    echo "    Harness: 10 methodology-driven targets"
 }
 
 # =====================================================================
-# PHASE 4: DICTIONARY (CVE-enriched)
+# PHASE 4: DICTIONARY
 # =====================================================================
 phase_dictionary() {
-    echo "[+] Phase 4: CVE-enriched dictionary..."
+    echo "[+] Phase 4: Dictionary..."
     cat << 'EOF' > "$WORKDIR/dictionaries/skia.dict"
-# Path verbs
 verb_move="move"
 verb_line="line"
 verb_quad="quad"
 verb_conic="conic"
 verb_cubic="cubic"
 verb_close="close"
-# Gradients
 grad_linear="LinearGradient"
 grad_radial="RadialGradient"
 grad_sweep="SweepGradient"
-# Filters
 filter_blur="Blur"
-filter_compose="Compose"
-filter_merge="Merge"
-# Canvas ops
 cmd_save="saveLayer"
 cmd_restore="restore"
 cmd_clip="clipPath"
-cmd_concat="concat"
-# Image headers (codec parsing — CVE-2024-8636)
 header_png="\x89PNG\x0d\x0a\x1a\x0a"
 header_jpg="\xff\xd8\xff\xe0"
 header_jpg_exif="\xff\xd8\xff\xe1"
@@ -792,32 +683,21 @@ header_webp="RIFF"
 header_webp2="WEBP"
 header_ico="\x00\x00\x01\x00"
 header_wbmp="\x00\x00"
-# SKP format (SkPicture — CVE-2025-0444)
 header_skp="skiapict"
-# Vertices/Mesh (CVE-2023-6345)
-kw_vertices="SkVertices"
-kw_mesh="MeshOp"
-kw_combine="combine"
-# Float edge cases (trigger overflow — CVE-2026-3538)
 float_zero="\x00\x00\x00\x00"
 float_one="\x00\x00\x80\x3f"
-float_neg_one="\x00\x00\x80\xbf"
 float_inf="\x00\x00\x80\x7f"
-float_neg_inf="\x00\x00\x80\xff"
 float_nan="\x00\x00\xc0\x7f"
 float_max="\xff\xff\x7f\x7f"
-float_min="\x01\x00\x00\x00"
-# Integer edge cases (trigger CVE-2023-2136, CVE-2023-6345)
 int32_max="\xff\xff\xff\x7f"
 int32_min="\x00\x00\x00\x80"
-int32_near_max="\xfe\xff\xff\x7f"
 int16_max="\xff\x7f"
 uint16_max="\xff\xff"
 EOF
 }
 
 # =====================================================================
-# PHASE 5-8: Fetch, Corpus, Compile, Minimize (unchanged from v6.0)
+# PHASE 5-8: Fetch, Corpus, Compile, Minimize
 # =====================================================================
 phase_fetch() {
     echo "[+] Phase 5: Fetching Skia..."
@@ -922,7 +802,7 @@ phase_diagnose() {
 # PHASE 10: LAUNCH 8-CORE SWARM
 # =====================================================================
 phase_launch() {
-    echo "[+] Phase 10: Launching CVE-Hunter Swarm..."
+    echo "[+] Phase 10: Launching Swarm..."
     cd "$WORKDIR"
     pkill -9 afl-fuzz 2>/dev/null || true
     screen -ls 2>/dev/null | grep -v "No Sockets" | grep -E "\." | awk '{print $1}' | xargs -I{} screen -X -S {} quit 2>/dev/null || true
@@ -935,10 +815,10 @@ phase_launch() {
     echo "    Core 1: master    (ASAN + CmpLog + Deterministic)"
     screen -dmS master bash -c "cd $WORKDIR; $ENV; $AENV; afl-fuzz -i in -o out -D -M master -l 2 -c ./harness_skia_cmplog -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_asan"
 
-    echo "    Core 2: ubsan     (UBSan → CVE-2023-2136, CVE-2026-3538)"
+    echo "    Core 2: ubsan     (UBSan + explore)"
     screen -dmS ubsan bash -c "cd $WORKDIR; $ENV; $UENV; afl-fuzz -i in -o out -S ubsan -p explore -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_ubsan"
 
-    echo "    Core 3: asan_exp  (ASAN → CVE-2025-0444, CVE-2024-8198)"
+    echo "    Core 3: asan_exp  (ASAN + explore)"
     screen -dmS asan_exp bash -c "cd $WORKDIR; $ENV; $AENV; afl-fuzz -i in -o out -S asan_exp -p explore -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_asan"
 
     SCHEDULES=("fast" "rare" "seek" "coe" "exploit")
@@ -984,20 +864,20 @@ esac
 
 echo ""
 echo "================================================================"
-echo "[DONE] SKIA CVE-HUNTER v7.0"
+echo "[DONE] SKIA FUZZER v7.0"
 echo "================================================================"
 echo ""
-echo "CVE ATTACK SURFACES:"
-echo "  [0] Canvas+Paths    → CVE-2024-8198/8636 (heap OOB)"
-echo "  [1] Gradients       → CVE-2025-0436 (int overflow)"
-echo "  [2] ImageFilters    → CVE-2024-1283 (heap OOB)"
-echo "  [3] ImageDecode     → CVE-2024-8636 (codec parsing)"
-echo "  [4] PathOps         → CVE-2023-2136 (int overflow)"
-echo "  [5] SkPicture       → CVE-2025-0444 (UAF)"
-echo "  [6] SkVertices/Mesh → CVE-2023-6345 (vertex overflow)"
-echo "  [7] Text+Matrix     → CVE-2026-3538 (math overflow)"
-echo "  [8] ShaderLifecycle → CVE-2025-0444 (UAF)"
-echo "  [9] ExtremeGeometry → CVE-2024-8198 (bounds bypass)"
+echo "VULNERABILITY PATTERNS TARGETED:"
+echo "  [0] Extreme path rendering   — rasterizer integer overflow"
+echo "  [1] Gradient stress          — interpolation math overflow"
+echo "  [2] Deep filter chains       — allocation size miscalculation"
+echo "  [3] Codec multi-path decode  — parser state machine edge cases"
+echo "  [4] Repeated draw ops        — counter accumulation overflow"
+echo "  [5] SkPicture round-trip     — deserialization lifecycle issues"
+echo "  [6] SkVertices repetition    — vertex count accumulation overflow"
+echo "  [7] Degenerate matrix chains — transform pipeline math overflow"
+echo "  [8] Object lifecycle stress  — refcount/dangling reference edges"
+echo "  [9] Nested clip+layer stack  — layer bounds allocation errors"
 echo ""
 echo "Commands:  watch -n 2 afl-whatsup -s -d out"
 echo "           screen -r master | ./fuzz.sh --triage"
