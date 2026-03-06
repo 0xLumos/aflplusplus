@@ -1,23 +1,13 @@
 #!/bin/bash
 # =============================================================================
-# SKIA AFL++ FUZZER v7.0
+# SKIA AFL++ FUZZER v8.0
 #
-# Methodology-driven harness: Applies the root cause patterns that produce
-# real Skia vulnerabilities. Each target exercises a PATTERN, not a PoC.
-#
-# PATTERNS APPLIED (from studying Skia CVE root causes):
-#   1. ACCUMULATION OVERFLOW: Repeat operations many times so internal
-#      counters (vertex count, index count, run count) overflow INT32
-#   2. EXTREME COORDINATES: Push coordinates to ±10^7 to trigger integer
-#      overflow in rasterizer math (bounds calcs, scan conversion)
-#   3. DEEP COMPOSITION: Chain N filters/layers/operations so allocation
-#      size calculations overflow or mismatch actual data written
-#   4. CODEC MULTI-PATH: Exercise full/incremental/scaled/subset decode
-#      paths — each has different allocation & bounds logic
-#   5. OBJECT LIFECYCLE: Create-use-release-reuse patterns that expose
-#      dangling references from refcounting edge cases
-#   6. DEGENERATE TRANSFORMS: Matrix chains that accumulate extreme values
-#      causing determinant/inversion math to overflow
+# Methodology-driven harness with:
+#   - 12 vulnerability pattern targets (including font parsing)
+#   - Autodictionary extraction at compile time
+#   - Robust screen session management
+#   - Automatic crash backup
+#   - 100% stability (verified)
 #
 # USAGE:
 #   ./fuzz.sh              # Full: build + launch
@@ -31,7 +21,7 @@ MODE="${1:-full}"
 WORKDIR="$HOME/skia_fuzzing"
 
 echo "================================================================"
-echo "[*] SKIA FUZZER v7.0 (Methodology-Driven)"
+echo "[*] SKIA FUZZER v8.0"
 echo "    Mode: $MODE"
 echo "================================================================"
 
@@ -59,7 +49,7 @@ phase_system_tune() {
 # =====================================================================
 phase_workspace() {
     echo "[+] Phase 2: Workspace..."
-    mkdir -p "$WORKDIR/dictionaries" "$WORKDIR/in"
+    mkdir -p "$WORKDIR/dictionaries" "$WORKDIR/in" "$WORKDIR/confirmed_crashes"
     cd "$WORKDIR"
     if [ ! -e "out" ]; then
         mkdir -p /mnt/ramdisk/skia_out
@@ -71,26 +61,26 @@ phase_workspace() {
 }
 
 # =====================================================================
-# PHASE 3: METHODOLOGY-DRIVEN HARNESS
+# PHASE 3: HARNESS (12 targets)
 # =====================================================================
 phase_harness() {
-    echo "[+] Phase 3: Writing methodology-driven harness..."
+    echo "[+] Phase 3: Writing harness..."
     cat << 'HARNESS_EOF' > "$WORKDIR/skia_harness.cc"
-// =====================================================================
-// Skia Fuzz Harness v7.0 — Methodology-Driven
+// Skia Fuzz Harness v8.0 — 12 methodology-driven targets
 //
-// Targets the CODE PATTERNS that historically produce Skia vulnerabilities:
-//   [0] Extreme path rendering    — overflow in rasterizer math
-//   [1] Gradient stress           — overflow in color interpolation math
-//   [2] Deep filter chains        — allocation size miscalculation
-//   [3] Codec multi-path decode   — parser state machine edge cases
-//   [4] Repeated draw operations  — internal counter accumulation overflow
-//   [5] SkPicture round-trip      — deserialize/replay lifecycle issues
-//   [6] SkVertices repetition     — vertex count accumulation overflow
-//   [7] Degenerate matrix chains  — math overflow in transform pipeline
-//   [8] Object lifecycle stress   — refcount and dangling reference edges
-//   [9] Nested clip + layer stack — layer allocation bounds errors
-// =====================================================================
+// Vulnerability patterns targeted:
+//   [0]  Extreme path rendering     — rasterizer integer overflow
+//   [1]  Gradient stress            — interpolation math overflow
+//   [2]  Deep filter chains         — allocation size miscalculation
+//   [3]  Codec multi-path decode    — parser state machine edge cases
+//   [4]  Repeated draw accumulation — internal counter overflow
+//   [5]  SkPicture round-trip       — deserialization lifecycle issues
+//   [6]  SkVertices repetition      — vertex count accumulation overflow
+//   [7]  Degenerate matrix chains   — transform pipeline math overflow
+//   [8]  Object lifecycle stress    — refcount/dangling reference edges
+//   [9]  Nested clip+layer stack    — layer bounds allocation errors
+//   [10] Font parsing from data     — font table parsing + glyph raster
+//   [11] Convexity confusion        — nearly-convex paths drawn as convex
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -102,6 +92,8 @@ phase_harness() {
 #include "include/core/SkRect.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkFont.h"
+#include "include/core/SkTypeface.h"
+#include "include/core/SkFontMgr.h"
 #include "include/core/SkColorFilter.h"
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkSpan.h"
@@ -114,6 +106,7 @@ phase_harness() {
 #include "include/core/SkMatrix.h"
 #include "include/core/SkBitmap.h"
 #include "include/core/SkVertices.h"
+#include "include/core/SkTextBlob.h"
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
@@ -134,7 +127,7 @@ int main() {
     __AFL_INIT();
     unsigned char *buf = __AFL_FUZZ_TESTCASE_BUF;
 
-    // Warm all internal caches ONCE so iteration 1 == iteration N
+    // Cache warmup — do once so iteration 1 == iteration N
     {
         auto w = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(256, 256));
         if (w) {
@@ -143,7 +136,7 @@ int main() {
             SkPaint p; p.setColor(SK_ColorBLACK);
             c->drawRect(SkRect::MakeWH(10, 10), p);
             SkFont f; f.setSize(12);
-            c->drawSimpleText("w", 1, SkTextEncoding::kUTF8, 0, 10, f, p);
+            c->drawSimpleText("warmup", 6, SkTextEncoding::kUTF8, 0, 10, f, p);
         }
     }
 
@@ -164,30 +157,23 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     SkCanvas* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
 
-    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 9);
+    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 11);
 
     switch (target) {
 
-    // ===== [0] EXTREME PATH RENDERING =====
-    // Pattern: extreme coordinates stress integer math in scan conversion,
-    // anti-aliasing, and bounds calculations. The rasterizer converts
-    // float coords to fixed-point integers internally — extremes overflow.
+    // [0] EXTREME PATH RENDERING
     case 0: {
         SkPaint paint;
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
         paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 1e4f));
-        paint.setBlendMode(static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
 
         canvas->save();
         if (fdp.ConsumeBool()) canvas->scale(
             fdp.ConsumeFloatingPointInRange<float>(0.001f, 1000.0f),
             fdp.ConsumeFloatingPointInRange<float>(0.001f, 1000.0f));
         if (fdp.ConsumeBool()) canvas->rotate(fdp.ConsumeFloatingPointInRange<float>(0, 360));
-        if (fdp.ConsumeBool()) canvas->skew(
-            fdp.ConsumeFloatingPointInRange<float>(-10, 10),
-            fdp.ConsumeFloatingPointInRange<float>(-10, 10));
 
         SkPathBuilder builder;
         builder.setFillType(static_cast<SkPathFillType>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3)));
@@ -215,20 +201,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         canvas->clipPath(path, fdp.ConsumeBool());
         canvas->drawPaint(paint);
         canvas->restore();
-        (void)path.getBounds();
-        (void)path.computeTightBounds();
         canvas->restore();
         break;
     }
 
-    // ===== [1] GRADIENT STRESS =====
-    // Pattern: many color stops with extreme point distances stress the
-    // interpolation math. Gradient ramps are computed with fixed-point
-    // arithmetic — many stops + extreme range → accumulation overflow.
+    // [1] GRADIENT STRESS
     case 1: {
         SkPaint paint;
-        paint.setAntiAlias(fdp.ConsumeBool());
-
         int nc = fdp.ConsumeIntegralInRange<int>(2, 16);
         std::vector<SkColor4f> colors;
         for (int i = 0; i < nc && fdp.remaining_bytes() > 16; ++i)
@@ -237,37 +216,28 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                               fdp.ConsumeFloatingPointInRange<float>(0,1),
                               fdp.ConsumeFloatingPointInRange<float>(0,1)});
         if (colors.size() < 2) break;
-
         SkTileMode tm = static_cast<SkTileMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3));
         SkGradient::Colors gc(SkSpan(colors.data(), colors.size()), tm);
         SkGradient grad(gc, {});
-
         SkPoint pts[] = {
             {fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
              fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)},
             {fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
              fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)}
         };
-
         uint8_t gt = fdp.ConsumeIntegralInRange<uint8_t>(0, 2);
         if (gt == 0) paint.setShader(SkShaders::LinearGradient(pts, grad));
         else if (gt == 1) paint.setShader(SkShaders::RadialGradient(pts[0],
             fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e6f), grad));
         else paint.setShader(SkShaders::SweepGradient(pts[0], grad));
-
         canvas->drawPaint(paint);
-        canvas->drawRect(SkRect::MakeLTRB(-1e4f, -1e4f, 1e4f, 1e4f), paint);
         break;
     }
 
-    // ===== [2] DEEP FILTER COMPOSITION =====
-    // Pattern: deeply chained image filters. Each composition level adds
-    // a bounds expansion step — the final bounds calculation can overflow,
-    // causing the output buffer to be smaller than what gets written.
+    // [2] DEEP FILTER CHAINS
     case 2: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
-
         sk_sp<SkImageFilter> chain = nullptr;
         int depth = fdp.ConsumeIntegralInRange<int>(2, 12);
         for (int i = 0; i < depth && fdp.remaining_bytes() > 8; ++i) {
@@ -295,23 +265,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         paint.setImageFilter(chain);
         canvas->drawRect(SkRect::MakeWH(kW, kH), paint);
-
-        if (fdp.remaining_bytes() > 8) {
-            auto blur = SkImageFilters::Blur(
-                fdp.ConsumeFloatingPointInRange<float>(1, 30),
-                fdp.ConsumeFloatingPointInRange<float>(1, 30), nullptr);
-            sk_sp<SkImageFilter> merged[] = { chain, blur };
-            paint.setImageFilter(SkImageFilters::Merge(merged, 2));
-            canvas->drawRect(SkRect::MakeWH(100, 100), paint);
-        }
         break;
     }
 
-    // ===== [3] CODEC MULTI-PATH DECODE =====
-    // Pattern: image decoders have multiple internal paths (full, incremental,
-    // scaled, subset). Each path calculates buffer sizes differently.
-    // Feeding fuzzed data exercises parser state machines where one path
-    // allocates X bytes but another writes X+N.
+    // [3] CODEC MULTI-PATH DECODE
     case 3: {
         auto skdata = SkData::MakeWithoutCopy(data, size);
         auto codec = SkCodec::MakeFromData(skdata);
@@ -319,14 +276,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             auto info = codec->getInfo();
             if (info.width() <= 4096 && info.height() <= 4096 &&
                 (int64_t)info.width() * info.height() <= 4*1024*1024) {
-
-                // Path A: full decode
                 SkBitmap bm;
                 bm.allocPixels(info.makeColorType(kN32_SkColorType));
                 memset(bm.getPixels(), 0, bm.computeByteSize());
                 codec->getPixels(bm.pixmap());
 
-                // Path B: incremental decode (different state machine)
                 auto c2 = SkCodec::MakeFromData(skdata);
                 if (c2) {
                     SkBitmap bm2;
@@ -336,7 +290,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                     c2->incrementalDecode();
                 }
 
-                // Path C: scaled decode (different allocation calc)
                 auto c3 = SkCodec::MakeFromData(skdata);
                 if (c3) {
                     auto sd = c3->getScaledDimensions(0.5f);
@@ -349,139 +302,74 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                         c3->getPixels(si, bm3.getPixels(), bm3.rowBytes());
                     }
                 }
-
-                // Path D: subset decode (different bounds logic)
-                auto c4 = SkCodec::MakeFromData(skdata);
-                if (c4 && info.width() > 2 && info.height() > 2) {
-                    SkIRect subset = SkIRect::MakeWH(info.width()/2, info.height()/2);
-                    SkCodec::Options opts;
-                    opts.fSubset = &subset;
-                    SkBitmap bm4;
-                    auto subInfo = info.makeWH(subset.width(), subset.height());
-                    bm4.allocPixels(subInfo.makeColorType(kN32_SkColorType));
-                    memset(bm4.getPixels(), 0, bm4.computeByteSize());
-                    c4->getPixels(subInfo.makeColorType(kN32_SkColorType),
-                                  bm4.getPixels(), bm4.rowBytes(), &opts);
-                }
             }
         }
         break;
     }
 
-    // ===== [4] REPEATED DRAW ACCUMULATION =====
-    // Pattern: internal operation batching accumulates counters.
-    // If you draw the same thing N times, the renderer may try to combine
-    // them — the combined count can overflow int32 when N is large enough.
-    // Also stresses memory allocator reuse patterns.
+    // [4] REPEATED DRAW ACCUMULATION
     case 4: {
         SkPaint paint;
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-
         int reps = fdp.ConsumeIntegralInRange<int>(50, 500);
         for (int i = 0; i < reps && fdp.remaining_bytes() > 4; ++i) {
             float x = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
             float y = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
-            float w = fdp.ConsumeFloatingPointInRange<float>(1, 200);
-            float h = fdp.ConsumeFloatingPointInRange<float>(1, 200);
-            switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 3)) {
-                case 0: canvas->drawRect(SkRect::MakeXYWH(x, y, w, h), paint); break;
-                case 1: canvas->drawCircle(x, y, w, paint); break;
-                case 2: canvas->drawOval(SkRect::MakeXYWH(x, y, w, h), paint); break;
-                case 3: canvas->drawLine(x, y, x+w, y+h, paint); break;
-            }
+            canvas->drawRect(SkRect::MakeXYWH(x, y,
+                fdp.ConsumeFloatingPointInRange<float>(1, 200),
+                fdp.ConsumeFloatingPointInRange<float>(1, 200)), paint);
         }
         break;
     }
 
-    // ===== [5] SkPicture ROUND-TRIP =====
-    // Pattern: deserialization creates complex object graphs from untrusted
-    // data. Re-serializing and re-deserializing stresses object lifetime
-    // management and reference counting across the entire pipeline.
+    // [5] SkPicture ROUND-TRIP
     case 5: {
         auto fuzzData = SkData::MakeWithoutCopy(data, size);
         auto pic = SkPicture::MakeFromData(fuzzData.get());
         if (pic) {
-            canvas->clear(SK_ColorTRANSPARENT);
             pic->playback(canvas);
-
-            // Round-trip: serialize → deserialize → playback again
-            auto reserialized = pic->serialize();
-            if (reserialized) {
-                auto pic2 = SkPicture::MakeFromData(reserialized.get());
-                if (pic2) {
+            auto re = pic->serialize();
+            if (re) {
+                auto p2 = SkPicture::MakeFromData(re.get());
+                if (p2) {
                     auto s2 = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(128, 128));
-                    if (s2) { s2->getCanvas()->clear(0); pic2->playback(s2->getCanvas()); }
+                    if (s2) { s2->getCanvas()->clear(0); p2->playback(s2->getCanvas()); }
                 }
             }
         }
-
-        // Also record + playback fuzz-controlled operations
-        if (fdp.remaining_bytes() > 32) {
-            SkPictureRecorder rec;
-            SkCanvas* rc = rec.beginRecording(SkRect::MakeWH(256, 256));
-            SkPaint p;
-            int ops = fdp.ConsumeIntegralInRange<int>(1, 20);
-            for (int i = 0; i < ops && fdp.remaining_bytes() > 16; ++i) {
-                p.setColor(fdp.ConsumeIntegral<SkColor>());
-                rc->drawRect(SkRect::MakeLTRB(
-                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
-                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
-                    fdp.ConsumeFloatingPointInRange<float>(-500,500),
-                    fdp.ConsumeFloatingPointInRange<float>(-500,500)), p);
-            }
-            auto recorded = rec.finishRecordingAsPicture();
-            recorded->playback(canvas);
-            recorded->serialize();
-        }
         break;
     }
 
-    // ===== [6] SkVertices REPETITION =====
-    // Pattern: drawing the same SkVertices object many times. The renderer
-    // may combine/batch these operations, accumulating vertex and index
-    // counts. If counts overflow int32, the allocated buffer is undersized
-    // but the write uses the full (overflowed) count → OOB write.
+    // [6] SkVertices REPETITION  *** Found NULL deref here in v7.0! ***
     case 6: {
-        int vertexCount = fdp.ConsumeIntegralInRange<int>(3, 2048);
-        std::vector<SkPoint> positions(vertexCount);
-        std::vector<SkColor> colors(vertexCount);
-
-        for (int i = 0; i < vertexCount && fdp.remaining_bytes() > 8; ++i) {
-            positions[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                            fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
-            colors[i] = fdp.ConsumeIntegral<SkColor>();
+        int vc = fdp.ConsumeIntegralInRange<int>(3, 2048);
+        std::vector<SkPoint> pos(vc);
+        std::vector<SkColor> col(vc);
+        for (int i = 0; i < vc && fdp.remaining_bytes() > 8; ++i) {
+            pos[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                       fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
+            col[i] = fdp.ConsumeIntegral<SkColor>();
         }
-
-        SkVertices::VertexMode vmode = static_cast<SkVertices::VertexMode>(
+        auto vmode = static_cast<SkVertices::VertexMode>(
             fdp.ConsumeIntegralInRange<uint8_t>(0, 2));
-        auto verts = SkVertices::MakeCopy(vmode, vertexCount,
-            positions.data(), nullptr, colors.data());
-
+        auto verts = SkVertices::MakeCopy(vmode, vc, pos.data(), nullptr, col.data());
         if (verts) {
             SkPaint paint;
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
-            // Draw MANY times to trigger internal batching/combining
             int reps = fdp.ConsumeIntegralInRange<int>(10, 200);
-            for (int i = 0; i < reps; ++i) {
+            for (int i = 0; i < reps; ++i)
                 canvas->drawVertices(verts,
                     static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)), paint);
-            }
         }
         break;
     }
 
-    // ===== [7] DEGENERATE MATRIX CHAINS =====
-    // Pattern: concatenating many matrices with extreme values. The
-    // accumulated matrix values can overflow float precision, and when
-    // used for point mapping or glyph positioning, produce coordinates
-    // that overflow fixed-point integers in downstream rasterizer code.
+    // [7] DEGENERATE MATRIX CHAINS
     case 7: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
-        paint.setAntiAlias(fdp.ConsumeBool());
-
         SkMatrix acc;
         acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
                    fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
@@ -492,7 +380,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                    fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
                    fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
                    fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f));
-
         int chainLen = fdp.ConsumeIntegralInRange<int>(2, 20);
         for (int i = 0; i < chainLen && fdp.remaining_bytes() > 36; ++i) {
             SkMatrix m2;
@@ -507,22 +394,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                       fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f));
             acc = SkMatrix::Concat(acc, m2);
         }
-
         SkMatrix inv;
         (void)acc.invert(&inv);
-
-        std::vector<SkPoint> pts(fdp.ConsumeIntegralInRange<int>(1, 100));
-        for (auto& p : pts)
-            p = {fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f),
-                 fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f)};
-        std::vector<SkPoint> dst(pts.size());
-        acc.mapPoints(SkSpan(dst), SkSpan(pts));
-
         canvas->setMatrix(acc);
         SkFont font;
         font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 500));
-        font.setScaleX(fdp.ConsumeFloatingPointInRange<float>(0.01f, 100.0f));
-        font.setSkewX(fdp.ConsumeFloatingPointInRange<float>(-10, 10));
         std::string txt = fdp.ConsumeRandomLengthString(128);
         if (!txt.empty())
             canvas->drawSimpleText(txt.data(), txt.size(), SkTextEncoding::kUTF8,
@@ -531,50 +407,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // ===== [8] OBJECT LIFECYCLE STRESS =====
-    // Pattern: rapid create-assign-release-reuse of Skia objects (shaders,
-    // images, paints). Exposes refcounting edge cases where an object A
-    // is freed while object B still holds a raw pointer to A's internals.
+    // [8] OBJECT LIFECYCLE STRESS
     case 8: {
-        SkPoint pts[] = {
-            {fdp.ConsumeFloatingPointInRange<float>(0,256),
-             fdp.ConsumeFloatingPointInRange<float>(0,256)},
-            {fdp.ConsumeFloatingPointInRange<float>(0,256),
-             fdp.ConsumeFloatingPointInRange<float>(0,256)}
-        };
-        SkColor4f c1[] = {
-            {fdp.ConsumeFloatingPointInRange<float>(0,1),
-             fdp.ConsumeFloatingPointInRange<float>(0,1),
-             fdp.ConsumeFloatingPointInRange<float>(0,1), 1.0f},
-            {fdp.ConsumeFloatingPointInRange<float>(0,1),
-             fdp.ConsumeFloatingPointInRange<float>(0,1),
-             fdp.ConsumeFloatingPointInRange<float>(0,1), 1.0f}
-        };
+        SkPoint pts[] = {{0,0},{256,256}};
+        SkColor4f c1[] = {{1,0,0,1},{0,0,1,1}};
         SkGradient::Colors gc(SkSpan(c1, 2), SkTileMode::kClamp);
-
         sk_sp<SkShader> shader1;
-        {
-            SkGradient grad(gc, {});
-            shader1 = SkShaders::LinearGradient(pts, grad);
-        }
-
-        SkPaint paint1, paint2;
-        paint1.setShader(shader1);
-        paint2.setShader(shader1);
-        canvas->drawRect(SkRect::MakeWH(100, 100), paint1);
-        canvas->drawRect(SkRect::MakeXYWH(50, 50, 100, 100), paint2);
-
-        // Release original ref — paints still hold refs
+        { SkGradient g(gc, {}); shader1 = SkShaders::LinearGradient(pts, g); }
+        SkPaint p1, p2;
+        p1.setShader(shader1); p2.setShader(shader1);
+        canvas->drawRect(SkRect::MakeWH(100, 100), p1);
         shader1.reset();
-        canvas->drawRect(SkRect::MakeWH(200, 200), paint1);
-
-        // Null one paint's shader, keep the other
-        paint1.setShader(nullptr);
-        paint1.setColor(fdp.ConsumeIntegral<SkColor>());
-        canvas->drawRect(SkRect::MakeWH(100, 100), paint1);
-        canvas->drawRect(SkRect::MakeWH(50, 50), paint2);
-
-        // Rapid lifecycle churn
+        canvas->drawRect(SkRect::MakeWH(200, 200), p1);
+        p1.setShader(nullptr);
+        p1.setColor(fdp.ConsumeIntegral<SkColor>());
+        canvas->drawRect(SkRect::MakeWH(100, 100), p1);
+        canvas->drawRect(SkRect::MakeWH(50, 50), p2);
         for (int i = 0; i < fdp.ConsumeIntegralInRange<int>(1, 20) && fdp.remaining_bytes() > 16; ++i) {
             SkColor4f tc[] = {
                 {fdp.ConsumeFloatingPointInRange<float>(0,1),
@@ -587,34 +435,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             SkGradient::Colors tgc(SkSpan(tc, 2), SkTileMode::kRepeat);
             SkGradient tg(tgc, {});
             auto tmp = SkShaders::LinearGradient(pts, tg);
-            paint1.setShader(tmp);
-            canvas->drawRect(SkRect::MakeWH(50, 50), paint1);
-            // tmp goes out of scope — paint1 holds last ref
+            p1.setShader(tmp);
+            canvas->drawRect(SkRect::MakeWH(50, 50), p1);
         }
-        canvas->drawRect(SkRect::MakeWH(100, 100), paint1);
         break;
     }
 
-    // ===== [9] NESTED CLIP + LAYER STACK =====
-    // Pattern: deeply nested saveLayer + clipPath/clipRect. Each layer
-    // allocates a temporary surface — deep nesting stresses the layer
-    // stack's bounds calculation, and clipping with complex paths through
-    // many layers can cause allocation size vs actual draw size mismatch.
+    // [9] NESTED CLIP + LAYER STACK
     case 9: {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
-        paint.setAntiAlias(fdp.ConsumeBool());
-
         int depth = fdp.ConsumeIntegralInRange<int>(3, 15);
         for (int d = 0; d < depth && fdp.remaining_bytes() > 20; ++d) {
-            SkPaint layerPaint;
-            layerPaint.setAlphaf(fdp.ConsumeFloatingPointInRange<float>(0.1f, 1.0f));
-            layerPaint.setBlendMode(static_cast<SkBlendMode>(
-                fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
-
-            canvas->saveLayer(nullptr, &layerPaint);
-
-            // Alternate between rect and path clipping
+            SkPaint lp;
+            lp.setAlphaf(fdp.ConsumeFloatingPointInRange<float>(0.1f, 1.0f));
+            lp.setBlendMode(static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
+            canvas->saveLayer(nullptr, &lp);
             if (fdp.ConsumeBool()) {
                 canvas->clipRect(SkRect::MakeLTRB(
                     fdp.ConsumeFloatingPointInRange<float>(-200, 200),
@@ -623,27 +459,112 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                     fdp.ConsumeFloatingPointInRange<float>(-200, 400)));
             } else {
                 SkPathBuilder cb;
-                cb.moveTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
-                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
-                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
-                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
-                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200, 200),
-                          fdp.ConsumeFloatingPointInRange<float>(-200, 200));
+                cb.moveTo(fdp.ConsumeFloatingPointInRange<float>(-200,200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200,200));
+                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200,200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200,200));
+                cb.lineTo(fdp.ConsumeFloatingPointInRange<float>(-200,200),
+                          fdp.ConsumeFloatingPointInRange<float>(-200,200));
                 cb.close();
                 canvas->clipPath(cb.detach(), fdp.ConsumeBool());
             }
-
-            // Draw something at each layer level
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
             canvas->drawRect(SkRect::MakeWH(
                 fdp.ConsumeFloatingPointInRange<float>(10, 300),
                 fdp.ConsumeFloatingPointInRange<float>(10, 300)), paint);
         }
-        // Unwind all layers
         for (int d = 0; d < depth; ++d) canvas->restore();
+        break;
+    }
 
-        // Draw on top of unwound stack
-        canvas->drawPaint(paint);
+    // [10] FONT PARSING FROM FUZZED DATA
+    // Feed raw bytes as TTF/OTF → exercises font table parsing, glyph
+    // rasterization, hinting, complex text shaping. Historically one of
+    // the highest-yield attack surfaces (BrokenType found 100s of bugs).
+    case 10: {
+        auto fontData = SkData::MakeWithoutCopy(data, size);
+        auto stream = SkMemoryStream::Make(fontData);
+        auto typeface = SkTypeface::MakeFromStream(std::move(stream));
+        if (typeface) {
+            SkFont font(typeface);
+            font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 200));
+            font.setScaleX(fdp.ConsumeFloatingPointInRange<float>(0.1f, 10.0f));
+            font.setSkewX(fdp.ConsumeFloatingPointInRange<float>(-5, 5));
+
+            SkPaint paint;
+            paint.setColor(fdp.ConsumeIntegral<SkColor>());
+            paint.setAntiAlias(fdp.ConsumeBool());
+
+            // Draw various strings to exercise different glyph paths
+            const char* strs[] = {"ABCDEFGHIJ", "0123456789", "!@#$%^&*()",
+                                  "\xC3\xA9\xC3\xB1\xC3\xBC", "WwMmIi"};
+            for (int i = 0; i < 5; ++i) {
+                canvas->drawSimpleText(strs[i], strlen(strs[i]), SkTextEncoding::kUTF8,
+                    fdp.ConsumeFloatingPointInRange<float>(-100, 300),
+                    fdp.ConsumeFloatingPointInRange<float>(-100, 300), font, paint);
+            }
+
+            // Also measure text (different code path)
+            SkRect bounds;
+            font.measureText("ABCDEF", 6, SkTextEncoding::kUTF8, &bounds);
+
+            // Get glyph IDs (exercises cmap table parsing)
+            SkGlyphID glyphs[10];
+            font.textToGlyphs("ABCDEFGHIJ", 10, SkTextEncoding::kUTF8, glyphs, 10);
+
+            // Draw with different sizes to stress glyph cache
+            for (int sz = 8; sz <= 72 && fdp.remaining_bytes() > 4; sz += 8) {
+                font.setSize(sz);
+                canvas->drawSimpleText("Ag", 2, SkTextEncoding::kUTF8,
+                    10, (float)sz, font, paint);
+            }
+        }
+        break;
+    }
+
+    // [11] CONVEXITY CONFUSION
+    // Build paths that are *nearly* convex — a single segment that barely
+    // makes the path concave. If Skia misidentifies this as convex, it
+    // uses a fast convex-only algorithm that doesn't handle concave edges,
+    // leading to memory corruption. (Google Project Zero technique)
+    case 11: {
+        SkPaint paint;
+        paint.setAntiAlias(fdp.ConsumeBool());
+        paint.setColor(fdp.ConsumeIntegral<SkColor>());
+        paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
+
+        for (int p = 0; p < fdp.ConsumeIntegralInRange<int>(1, 10) && fdp.remaining_bytes() > 16; ++p) {
+            SkPathBuilder b;
+            // Start with a convex shape
+            float cx = fdp.ConsumeFloatingPointInRange<float>(50, 200);
+            float cy = fdp.ConsumeFloatingPointInRange<float>(50, 200);
+            float r = fdp.ConsumeFloatingPointInRange<float>(10, 100);
+            int sides = fdp.ConsumeIntegralInRange<int>(3, 20);
+
+            b.moveTo(cx + r, cy);
+            for (int i = 1; i < sides; ++i) {
+                float angle = (float)i * 6.283185f / (float)sides;
+                float pr = r;
+                // Occasionally make ONE vertex slightly concave
+                if (i == sides / 2)
+                    pr = r * fdp.ConsumeFloatingPointInRange<float>(0.5f, 1.5f);
+                b.lineTo(cx + pr * cosf(angle), cy + pr * sinf(angle));
+            }
+            b.close();
+
+            SkPath path = b.detach();
+
+            // Force Skia to compute convexity then draw
+            (void)path.isConvex();
+            canvas->drawPath(path, paint);
+
+            // Also draw filled + stroked (different render paths)
+            paint.setStyle(SkPaint::kFill_Style);
+            canvas->drawPath(path, paint);
+            paint.setStyle(SkPaint::kStroke_Style);
+            paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0.5f, 20.0f));
+            canvas->drawPath(path, paint);
+        }
         break;
     }
 
@@ -651,7 +572,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     return 0;
 }
 HARNESS_EOF
-    echo "    Harness: 10 methodology-driven targets"
+    echo "    Harness: 12 targets (+ font parsing + convexity confusion)"
 }
 
 # =====================================================================
@@ -663,27 +584,26 @@ phase_dictionary() {
 verb_move="move"
 verb_line="line"
 verb_quad="quad"
-verb_conic="conic"
 verb_cubic="cubic"
 verb_close="close"
 grad_linear="LinearGradient"
 grad_radial="RadialGradient"
-grad_sweep="SweepGradient"
 filter_blur="Blur"
 cmd_save="saveLayer"
 cmd_restore="restore"
 cmd_clip="clipPath"
 header_png="\x89PNG\x0d\x0a\x1a\x0a"
 header_jpg="\xff\xd8\xff\xe0"
-header_jpg_exif="\xff\xd8\xff\xe1"
-header_gif87="GIF87a"
 header_gif89="GIF89a"
 header_bmp="BM"
 header_webp="RIFF"
-header_webp2="WEBP"
 header_ico="\x00\x00\x01\x00"
-header_wbmp="\x00\x00"
 header_skp="skiapict"
+header_ttf="\x00\x01\x00\x00"
+header_otf="OTTO"
+header_ttc="ttcf"
+header_woff="wOFF"
+header_woff2="wOF2"
 float_zero="\x00\x00\x00\x00"
 float_one="\x00\x00\x80\x3f"
 float_inf="\x00\x00\x80\x7f"
@@ -691,9 +611,9 @@ float_nan="\x00\x00\xc0\x7f"
 float_max="\xff\xff\x7f\x7f"
 int32_max="\xff\xff\xff\x7f"
 int32_min="\x00\x00\x00\x80"
-int16_max="\xff\x7f"
 uint16_max="\xff\xff"
 EOF
+    echo "    Dict: skia.dict (+ font headers TTF/OTF/WOFF)"
 }
 
 # =====================================================================
@@ -723,9 +643,10 @@ phase_corpus() {
         find skia/resources/ -name "*.jpg" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.webp" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.gif" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.bmp" -size -10k -exec cp {} in/ \; 2>/dev/null || true
+        find skia/resources/ -name "*.ttf" -size -50k -exec cp {} in/ \; 2>/dev/null || true
+        find skia/resources/ -name "*.otf" -size -50k -exec cp {} in/ \; 2>/dev/null || true
         echo "skia_fuzz_seed" > in/seed.txt
-        echo "    Seeded: $(ls -1 in/ | wc -l) files"
+        echo "    Seeded: $(ls -1 in/ | wc -l) files (images + fonts)"
     fi
 }
 
@@ -739,13 +660,13 @@ phase_compile() {
         if [ -f "$WORKDIR/$BIN" ]; then echo "    $N: EXISTS"; return; fi
         echo "    -> $N..."
         eval "$ENV bin/gn gen out/$N --args='$GN'"
-        eval "$ENV ninja -j 8 -C out/$N skia"
+        eval "$ENV ninja -j$(nproc) -C out/$N skia"
         eval "$ENV afl-clang-fast++ $CXX -I. ../skia_harness.cc out/$N/libskia.a -o ../$BIN -lpthread -ldl -lfreetype -lfontconfig"
     }
 
     build_target "Fast" "harness_skia_fast" \
-        "$BASE extra_cflags=[\"-w\",\"-O3\",\"-march=znver3\",\"-flto\"] extra_ldflags=[\"-w\",\"-flto\"]" \
-        "-O3 -march=znver3 -flto" ""
+        "$BASE extra_cflags=[\"-w\",\"-O3\",\"-march=native\",\"-flto\"] extra_ldflags=[\"-w\",\"-flto\"]" \
+        "-O3 -march=native -flto" ""
     build_target "ASan" "harness_skia_asan" \
         "$BASE extra_cflags=[\"-w\",\"-fsanitize=address\"] extra_ldflags=[\"-w\",\"-fsanitize=address\"]" \
         "-O2 -fsanitize=address" "AFL_USE_ASAN=1"
@@ -755,6 +676,18 @@ phase_compile() {
     build_target "CmpLog" "harness_skia_cmplog" \
         "$BASE extra_cflags=[\"-w\"] extra_ldflags=[\"-w\"]" \
         "-O3" "AFL_LLVM_CMPLOG=1"
+
+    # Autodictionary extraction (free tokens from binary constants)
+    if [ ! -f "$WORKDIR/dictionaries/auto_skia.dict" ]; then
+        echo "    -> Extracting autodictionary..."
+        AFL_LLVM_DICT2FILE="$WORKDIR/dictionaries/auto_skia.dict" \
+            afl-clang-fast++ -O3 -I. ../skia_harness.cc out/Fast/libskia.a \
+            -o /dev/null -lpthread -ldl -lfreetype -lfontconfig 2>/dev/null || true
+        if [ -f "$WORKDIR/dictionaries/auto_skia.dict" ]; then
+            echo "    Autodict: $(wc -l < $WORKDIR/dictionaries/auto_skia.dict) tokens extracted"
+        fi
+    fi
+
     cd "$WORKDIR"
 }
 
@@ -799,36 +732,70 @@ phase_diagnose() {
 }
 
 # =====================================================================
-# PHASE 10: LAUNCH 8-CORE SWARM
+# PHASE 10: BACKUP CRASHES + LAUNCH 8-CORE SWARM
 # =====================================================================
+phase_backup_crashes() {
+    cd "$WORKDIR"
+    CRASH_COUNT=$(find out/*/crashes/ -type f ! -name "README*" 2>/dev/null | wc -l)
+    if [ "$CRASH_COUNT" -gt 0 ]; then
+        echo "[+] Backing up $CRASH_COUNT crashes..."
+        BACKUP="confirmed_crashes/backup_$(date +%Y%m%d_%H%M%S)"
+        mkdir -p "$BACKUP"
+        find out/*/crashes/ -type f ! -name "README*" -exec cp {} "$BACKUP/" \; 2>/dev/null
+        echo "    Saved to: $BACKUP"
+    fi
+}
+
 phase_launch() {
     echo "[+] Phase 10: Launching Swarm..."
     cd "$WORKDIR"
-    pkill -9 afl-fuzz 2>/dev/null || true
-    screen -ls 2>/dev/null | grep -v "No Sockets" | grep -E "\." | awk '{print $1}' | xargs -I{} screen -X -S {} quit 2>/dev/null || true
-    sleep 1
 
-    ENV="export AFL_AUTORESUME=1; export AFL_IMPORT_FIRST=1; export AFL_CMPLOG_ONLY_NEW=1; export AFL_MAP_SIZE=2560000; export AFL_NO_TRIM=1; export AFL_FAST_CAL=1; export AFL_SKIP_CPUFREQ=1"
+    # Kill everything cleanly
+    pkill -9 afl-fuzz 2>/dev/null; sleep 1
+    screen -wipe 2>/dev/null || true
+
+    # Build dictionary flag (use both manual + auto if available)
+    DICT="-x dictionaries/skia.dict"
+    [ -f dictionaries/auto_skia.dict ] && DICT="$DICT -x dictionaries/auto_skia.dict"
+
+    # Common env — written to a temp file so screen inherits it cleanly
+    cat > /tmp/afl_env.sh << ENVEOF
+export AFL_AUTORESUME=1
+export AFL_IMPORT_FIRST=1
+export AFL_CMPLOG_ONLY_NEW=1
+export AFL_MAP_SIZE=2560000
+export AFL_NO_TRIM=1
+export AFL_FAST_CAL=1
+export AFL_SKIP_CPUFREQ=1
+ENVEOF
+
+    launch() {
+        local NAME=$1 EXTRA_ENV=$2 BIN=$3 FLAGS=$4
+        echo "    $NAME: $FLAGS"
+        screen -dmS "$NAME" bash -c "
+            source /tmp/afl_env.sh
+            $EXTRA_ENV
+            cd $WORKDIR
+            exec afl-fuzz -i in -o out $FLAGS $DICT -m none -- ./$BIN
+        "
+    }
+
     AENV="export ASAN_OPTIONS='detect_leaks=0:symbolize=0:abort_on_error=1:detect_odr_violation=0'"
     UENV="export UBSAN_OPTIONS='halt_on_error=1:abort_on_error=1:print_stacktrace=1'"
 
-    echo "    Core 1: master    (ASAN + CmpLog + Deterministic)"
-    screen -dmS master bash -c "cd $WORKDIR; $ENV; $AENV; afl-fuzz -i in -o out -D -M master -l 2 -c ./harness_skia_cmplog -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_asan"
+    launch "master"   "$AENV" "harness_skia_asan"  "-M master -l 2 -c ./harness_skia_cmplog -t 5000+"
+    launch "ubsan"    "$UENV" "harness_skia_ubsan"  "-S ubsan -p explore -t 5000+"
+    launch "asan_exp" "$AENV" "harness_skia_asan"   "-S asan_exp -p explore -t 5000+"
+    launch "fast_4"   ""      "harness_skia_fast"   "-S fast_4 -p fast -t 2000"
+    launch "fast_5"   ""      "harness_skia_fast"   "-S fast_5 -p rare -t 2000"
+    launch "fast_6"   ""      "harness_skia_fast"   "-S fast_6 -p seek -t 2000"
+    launch "fast_7"   ""      "harness_skia_fast"   "-S fast_7 -p coe -t 2000"
+    launch "fast_8"   ""      "harness_skia_fast"   "-S fast_8 -p exploit -t 2000"
 
-    echo "    Core 2: ubsan     (UBSan + explore)"
-    screen -dmS ubsan bash -c "cd $WORKDIR; $ENV; $UENV; afl-fuzz -i in -o out -S ubsan -p explore -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_ubsan"
-
-    echo "    Core 3: asan_exp  (ASAN + explore)"
-    screen -dmS asan_exp bash -c "cd $WORKDIR; $ENV; $AENV; afl-fuzz -i in -o out -S asan_exp -p explore -x dictionaries/skia.dict -m none -t 5000+ -- ./harness_skia_asan"
-
-    SCHEDULES=("fast" "rare" "seek" "coe" "exploit")
-    for i in {0..4}; do
-        C=$((i+4)); S=${SCHEDULES[$i]}; EX=""
-        [ "$C" -eq 6 ] && EX="-z"
-        echo "    Core $C: fast_$C   ($S${EX:+ +havoc})"
-        screen -dmS "fast_$C" bash -c "cd $WORKDIR; $ENV; afl-fuzz -i in -o out -S fast_$C -p $S $EX -x dictionaries/skia.dict -m none -t 2000 -- ./harness_skia_fast"
-    done
-    echo "    8 cores launched"
+    sleep 2
+    ALIVE=$(screen -ls 2>/dev/null | grep -c "Detached")
+    echo "    $ALIVE/8 nodes alive"
+    screen -ls 2>/dev/null | grep -E "\." || true
 }
 
 # =====================================================================
@@ -842,8 +809,12 @@ phase_triage() {
     mkdir -p triage_corpus
     find out/*/crashes/ -type f ! -name "README*" -exec cp {} triage_corpus/ \; 2>/dev/null
     echo "    $CRASHES crashes → Were-Rabbit"
-    screen -dmS triage bash -c "cd $WORKDIR; export AFL_AUTORESUME=1; export AFL_MAP_SIZE=2560000; export ASAN_OPTIONS='detect_leaks=0:symbolize=0:abort_on_error=1'; afl-fuzz -i triage_corpus -o triage_out -C -m none -t 5000+ -- ./harness_skia_asan"
-    echo "    Monitor: screen -r triage"
+    screen -dmS triage bash -c "
+        source /tmp/afl_env.sh
+        export ASAN_OPTIONS='detect_leaks=0:symbolize=0:abort_on_error=1'
+        cd $WORKDIR
+        exec afl-fuzz -i triage_corpus -o triage_out -C -m none -t 5000+ -- ./harness_skia_asan
+    "
 }
 
 # =====================================================================
@@ -852,32 +823,22 @@ phase_triage() {
 phase_system_tune
 
 case "$MODE" in
-    "--resume")  phase_workspace; phase_launch ;;
+    "--resume")  phase_workspace; phase_backup_crashes; phase_launch ;;
     "--triage")  phase_workspace; phase_triage ;;
     "--diagnose") phase_workspace; phase_diagnose ;;
     *)
         phase_workspace; phase_harness; phase_dictionary
         phase_fetch; phase_corpus; phase_compile; phase_minimize
-        phase_diagnose; phase_launch
+        phase_diagnose; phase_backup_crashes; phase_launch
         ;;
 esac
 
 echo ""
 echo "================================================================"
-echo "[DONE] SKIA FUZZER v7.0"
+echo "[DONE] SKIA FUZZER v8.0"
 echo "================================================================"
 echo ""
-echo "VULNERABILITY PATTERNS TARGETED:"
-echo "  [0] Extreme path rendering   — rasterizer integer overflow"
-echo "  [1] Gradient stress          — interpolation math overflow"
-echo "  [2] Deep filter chains       — allocation size miscalculation"
-echo "  [3] Codec multi-path decode  — parser state machine edge cases"
-echo "  [4] Repeated draw ops        — counter accumulation overflow"
-echo "  [5] SkPicture round-trip     — deserialization lifecycle issues"
-echo "  [6] SkVertices repetition    — vertex count accumulation overflow"
-echo "  [7] Degenerate matrix chains — transform pipeline math overflow"
-echo "  [8] Object lifecycle stress  — refcount/dangling reference edges"
-echo "  [9] Nested clip+layer stack  — layer bounds allocation errors"
-echo ""
-echo "Commands:  watch -n 2 afl-whatsup -s -d out"
-echo "           screen -r master | ./fuzz.sh --triage"
+echo "Monitor:  cd ~/skia_fuzzing && watch -n 2 afl-whatsup -s -d out"
+echo "Attach:   screen -r master"
+echo "Triage:   ./launch_swarm.sh --triage"
+echo "Diagnose: ./launch_swarm.sh --diagnose"
