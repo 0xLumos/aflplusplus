@@ -740,7 +740,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e5f),
                 fdp.ConsumeFloatingPointInRange<float>(0.001f, 1e5f)
             };
-            paint.setPathEffect(SkDashPathEffect::Make(intervals, 2,
+            paint.setPathEffect(SkDashPathEffect::Make(SkSpan(intervals, 2),
                 fdp.ConsumeFloatingPointInRange<float>(0, 1e5f)));
             canvas->drawRect(SkRect::MakeWH(200, 200), paint);
         }
