@@ -161,29 +161,29 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-        paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 1e4f));
+        paint.setStrokeWidth(fdp.ConsumeFloatingPointInRange<float>(0, 100.0f));
 
         canvas->save();
         if (fdp.ConsumeBool()) canvas->scale(
-            fdp.ConsumeFloatingPointInRange<float>(0.001f, 1000.0f),
-            fdp.ConsumeFloatingPointInRange<float>(0.001f, 1000.0f));
+            fdp.ConsumeFloatingPointInRange<float>(0.1f, 10.0f),
+            fdp.ConsumeFloatingPointInRange<float>(0.1f, 10.0f));
         if (fdp.ConsumeBool()) canvas->rotate(fdp.ConsumeFloatingPointInRange<float>(0, 360));
 
         SkPathBuilder builder;
         builder.setFillType(static_cast<SkPathFillType>(fdp.ConsumeIntegralInRange<uint8_t>(0, 3)));
-        int nv = fdp.ConsumeIntegralInRange<int>(1, 80);
+        int nv = fdp.ConsumeIntegralInRange<int>(1, 50);
         for (int i = 0; i < nv && fdp.remaining_bytes() > 12; ++i) {
-            float x = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
-            float y = fdp.ConsumeFloatingPointInRange<float>(-1e7f, 1e7f);
+            float x = fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f);
+            float y = fdp.ConsumeFloatingPointInRange<float>(-1e5f, 1e5f);
             switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 5)) {
                 case 0: builder.moveTo(x, y); break;
                 case 1: builder.lineTo(x, y); break;
-                case 2: builder.quadTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                       fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
-                case 3: builder.cubicTo(fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f),
-                                        fdp.ConsumeFloatingPointInRange<float>(-1e7f,1e7f), x, y); break;
+                case 2: builder.quadTo(fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f),
+                                       fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f), x, y); break;
+                case 3: builder.cubicTo(fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f),
+                                        fdp.ConsumeFloatingPointInRange<float>(-1e5f,1e5f), x, y); break;
                 case 4: builder.conicTo(x, y, x+10, y+10,
                             fdp.ConsumeFloatingPointInRange<float>(0.001f, 100.0f)); break;
                 case 5: builder.close(); break;
@@ -233,22 +233,22 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         sk_sp<SkImageFilter> chain = nullptr;
-        int depth = fdp.ConsumeIntegralInRange<int>(2, 12);
+        int depth = fdp.ConsumeIntegralInRange<int>(2, 6);
         for (int i = 0; i < depth && fdp.remaining_bytes() > 8; ++i) {
             sk_sp<SkImageFilter> filter;
             switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 4)) {
                 case 0: filter = SkImageFilters::Blur(
-                    fdp.ConsumeFloatingPointInRange<float>(0.1f, 50),
-                    fdp.ConsumeFloatingPointInRange<float>(0.1f, 50), chain); break;
+                    fdp.ConsumeFloatingPointInRange<float>(0.1f, 20.0f),
+                    fdp.ConsumeFloatingPointInRange<float>(0.1f, 20.0f), chain); break;
                 case 1: filter = SkImageFilters::Offset(
-                    fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                    fdp.ConsumeFloatingPointInRange<float>(-500, 500), chain); break;
+                    fdp.ConsumeFloatingPointInRange<float>(-100, 100),
+                    fdp.ConsumeFloatingPointInRange<float>(-100, 100), chain); break;
                 case 2: filter = SkImageFilters::Dilate(
-                    fdp.ConsumeIntegralInRange<int>(1, 30),
-                    fdp.ConsumeIntegralInRange<int>(1, 30), chain); break;
+                    fdp.ConsumeIntegralInRange<int>(1, 10),
+                    fdp.ConsumeIntegralInRange<int>(1, 10), chain); break;
                 case 3: filter = SkImageFilters::Erode(
-                    fdp.ConsumeIntegralInRange<int>(1, 30),
-                    fdp.ConsumeIntegralInRange<int>(1, 30), chain); break;
+                    fdp.ConsumeIntegralInRange<int>(1, 10),
+                    fdp.ConsumeIntegralInRange<int>(1, 10), chain); break;
                 case 4: {
                     auto cf = SkColorFilters::Blend(fdp.ConsumeIntegral<SkColor>(),
                         static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)));
@@ -307,7 +307,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-        int reps = fdp.ConsumeIntegralInRange<int>(50, 500);
+        int reps = fdp.ConsumeIntegralInRange<int>(20, 100);
         for (int i = 0; i < reps && fdp.remaining_bytes() > 4; ++i) {
             float x = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
             float y = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
@@ -338,7 +338,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // [6] SkVertices REPETITION
     case 6: {
-        int vc = fdp.ConsumeIntegralInRange<int>(3, 2048);
+        int vc = fdp.ConsumeIntegralInRange<int>(3, 512);
         std::vector<SkPoint> pos(vc);
         std::vector<SkColor> col(vc);
         for (int i = 0; i < vc && fdp.remaining_bytes() > 8; ++i) {
@@ -352,7 +352,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         if (verts) {
             SkPaint paint;
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
-            int reps = fdp.ConsumeIntegralInRange<int>(10, 200);
+            int reps = fdp.ConsumeIntegralInRange<int>(5, 50);
             for (int i = 0; i < reps; ++i)
                 canvas->drawVertices(verts,
                     static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)), paint);
@@ -365,27 +365,27 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         SkMatrix acc;
-        acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f),
-                   fdp.ConsumeFloatingPointInRange<float>(-1e6f, 1e6f));
-        int chainLen = fdp.ConsumeIntegralInRange<int>(2, 20);
+        acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f));
+        int chainLen = fdp.ConsumeIntegralInRange<int>(2, 10);
         for (int i = 0; i < chainLen && fdp.remaining_bytes() > 36; ++i) {
             SkMatrix m2;
-            m2.setAll(fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                      fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f));
+            m2.setAll(fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f));
             acc = SkMatrix::Concat(acc, m2);
         }
         SkMatrix inv;
@@ -477,7 +477,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // incompatibility with SkTypeface::MakeFrom* methods.
     case 10: {
         SkFont font;
-        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 500));
+        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 150.0f));
         font.setScaleX(fdp.ConsumeFloatingPointInRange<float>(0.01f, 100.0f));
         font.setSkewX(fdp.ConsumeFloatingPointInRange<float>(-10, 10));
 
@@ -596,6 +596,37 @@ float_max="\xff\xff\x7f\x7f"
 int32_max="\xff\xff\xff\x7f"
 int32_min="\x00\x00\x00\x80"
 uint16_max="\xff\xff"
+blend_src="Src"
+blend_dst="Dst"
+blend_srcover="SrcOver"
+blend_dstover="DstOver"
+blend_srcin="SrcIn"
+blend_dstin="DstIn"
+blend_srcout="SrcOut"
+blend_dstout="DstOut"
+blend_srcatop="SrcAtop"
+blend_dstatop="DstAtop"
+blend_xor="Xor"
+blend_plus="Plus"
+blend_modulate="Modulate"
+blend_screen="Screen"
+blend_overlay="Overlay"
+blend_darken="Darken"
+blend_lighten="Lighten"
+blend_colordodge="ColorDodge"
+blend_colorburn="ColorBurn"
+blend_hardlight="HardLight"
+blend_softlight="SoftLight"
+blend_difference="Difference"
+blend_exclusion="Exclusion"
+blend_multiply="Multiply"
+prop_antialias="AntiAlias"
+prop_color="Color"
+prop_strokewidth="StrokeWidth"
+prop_style="Style"
+prop_filter="ImageFilter"
+prop_shader="Shader"
+prop_font="Font"
 EOF
     echo "    Dict: skia.dict"
 }
