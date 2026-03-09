@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
-# SKIA AFL++ FUZZER v9.0 — PRODUCTION
+# SKIA AFL++ FUZZER v9.1 — STABILITY FIX
 #
-# 13 methodology-driven targets, API-compatible with latest Skia HEAD
-# All compilation errors resolved, all 8 nodes stable
+# 12 targets, fixed canvas, no SkSL (was causing 58% stability)
+# All harness crashes fixed, all 8 nodes stable
 #
 # USAGE:
 #   ./fuzz.sh              # Full: build + launch
@@ -17,7 +17,7 @@ MODE="${1:-full}"
 WORKDIR="$HOME/skia_fuzzing"
 
 echo "================================================================"
-echo "[*] SKIA FUZZER v9.0"
+echo "[*] SKIA FUZZER v9.1"
 echo "    Mode: $MODE"
 echo "================================================================"
 
@@ -57,12 +57,12 @@ phase_workspace() {
 }
 
 # =====================================================================
-# PHASE 3: HARNESS (13 targets)
+# PHASE 3: HARNESS (12 targets)
 # =====================================================================
 phase_harness() {
     echo "[+] Phase 3: Writing harness..."
     cat << 'HARNESS_EOF' > "$WORKDIR/skia_harness.cc"
-// Skia Fuzz Harness v9.0 — 13 methodology-driven targets
+// Skia Fuzz Harness v9.1 — 12 stable targets
 //
 // Vulnerability patterns targeted:
 //   [0]  Extreme path rendering     — rasterizer integer overflow
@@ -77,7 +77,6 @@ phase_harness() {
 //   [9]  Nested clip+layer stack    — layer bounds allocation errors
 //   [10] Text rendering stress      — font/glyph path fuzzing
 //   [11] Convexity confusion        — nearly-convex paths drawn as convex
-//   [12] SkSL Runtime Effects       — shader compiler/VM stress
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -102,11 +101,9 @@ phase_harness() {
 #include "include/core/SkBitmap.h"
 #include "include/core/SkVertices.h"
 #include "include/core/SkTextBlob.h"
-#include "include/core/SkString.h"
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
-#include "include/effects/SkRuntimeEffect.h"
 #include "include/codec/SkCodec.h"
 
 #include <unistd.h>
@@ -148,18 +145,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size < 32) return 0;
     FuzzedDataProvider fdp(data, size);
 
-    int kW = 256, kH = 256;
-    if (fdp.remaining_bytes() > 8 && fdp.ConsumeBool()) {
-        kW = fdp.ConsumeIntegralInRange<int>(32, 2048);
-        kH = fdp.ConsumeIntegralInRange<int>(32, 2048);
-        if ((int64_t)kW * kH > 4096 * 1024) { kW = 256; kH = 256; }
-    }
+    constexpr int kW = 256, kH = 256;
     auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(kW, kH));
     if (!surface) return 0;
     SkCanvas* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
 
-    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 12);
+    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 11);
 
     switch (target) {
 
@@ -338,13 +330,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // [5] SkPicture ROUND-TRIP
     case 5: {
-        if (size > 100 * 1024) break;
+        if (size > 50 * 1024) break;
         auto fuzzData = SkData::MakeWithoutCopy(data, size);
         auto pic = SkPicture::MakeFromData(fuzzData.get());
         if (pic) {
             pic->playback(canvas);
             auto re = pic->serialize();
-            if (re && re->size() <= 100 * 1024) {
+            if (re && re->size() <= 50 * 1024) {
                 auto p2 = SkPicture::MakeFromData(re.get());
                 if (p2) {
                     auto s2 = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(128, 128));
@@ -563,28 +555,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-    // [12] SkSL RUNTIME EFFECTS
-    case 12: {
-        std::string sksl = fdp.ConsumeRandomLengthString(512);
-        if (sksl.empty()) break;
-        std::string full_sksl = "half4 main(float2 p) { " + sksl + " \n return half4(1); }";
-        auto [effect, error] = SkRuntimeEffect::MakeForShader(SkString(full_sksl.c_str()));
-        if (effect) {
-            auto shader = effect->makeShader(nullptr, {}, nullptr);
-            if (shader) {
-                SkPaint p;
-                p.setShader(std::move(shader));
-                canvas->drawPaint(p);
-            }
-        }
-        break;
-    }
-
     } // switch
     return 0;
 }
 HARNESS_EOF
-    echo "    Harness: 13 targets"
+    echo "    Harness: 12 targets"
 }
 
 # =====================================================================
@@ -611,20 +586,6 @@ header_bmp="BM"
 header_webp="RIFF"
 header_ico="\x00\x00\x01\x00"
 header_skp="skiapict"
-sksl_main="half4 main(float2 p)"
-sksl_return="return"
-sksl_float="float"
-sksl_half="half"
-sksl_vec2="vec2"
-sksl_vec3="vec3"
-sksl_vec4="vec4"
-sksl_sample="sample"
-sksl_uniform="uniform"
-sksl_in="in"
-sksl_out="out"
-sksl_if="if"
-sksl_else="else"
-sksl_for="for"
 float_zero="\x00\x00\x00\x00"
 float_one="\x00\x00\x80\x3f"
 float_inf="\x00\x00\x80\x7f"
@@ -667,7 +628,6 @@ prop_font="Font"
 prop_mask="MaskFilter"
 prop_path="PathEffect"
 prop_blender="Blender"
-prop_runtime="RuntimeEffect"
 EOF
     echo "    Dict: skia.dict"
 }
@@ -693,17 +653,17 @@ phase_corpus() {
     if [ "$EXISTING" -gt 5 ]; then
         echo "    Corpus exists ($EXISTING files)"
     else
-        find skia/resources/ -name "*.svg" -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.skp" -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.png" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.jpg" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.webp" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        find skia/resources/ -name "*.gif" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        for i in $(seq 0 12); do
+        # Only small images — no SVG/SKP (too slow, causes hangs)
+        find skia/resources/ -name "*.png" -size -5k -exec cp {} in/ \; 2>/dev/null || true
+        find skia/resources/ -name "*.jpg" -size -5k -exec cp {} in/ \; 2>/dev/null || true
+        find skia/resources/ -name "*.webp" -size -5k -exec cp {} in/ \; 2>/dev/null || true
+        find skia/resources/ -name "*.gif" -size -5k -exec cp {} in/ \; 2>/dev/null || true
+        # Smart seeds: one per target
+        for i in $(seq 0 11); do
             printf "\\x$(printf %02x $i)" > "in/seed_$i.bin"
             head -c 64 /dev/urandom >> "in/seed_$i.bin"
         done
-        echo "    Seeded: $(ls -1 in/ | wc -l) smart files"
+        echo "    Seeded: $(ls -1 in/ | wc -l) files"
     fi
 }
 
@@ -742,7 +702,7 @@ phase_minimize() {
     cd "$WORKDIR"
     if [ -d "in_minimized" ]; then echo "    Already done"; return; fi
     mkdir -p in_min
-    AFL_MAP_SIZE=2560000 timeout 120 afl-cmin -i in -o in_min -m none -t 2000 -- ./harness_skia_fast 2>/dev/null || true
+    AFL_MAP_SIZE=2560000 timeout 120 afl-cmin -i in -o in_min -m none -t 5000 -- ./harness_skia_fast 2>/dev/null || true
     MIN=$(ls -1 in_min/ 2>/dev/null | wc -l)
     if [ "$MIN" -gt 0 ]; then
         rm -rf in_full 2>/dev/null || true
@@ -764,7 +724,7 @@ phase_diagnose() {
     [ -z "$TEST" ] && echo "test" > /tmp/si && TEST="/tmp/si" || TEST="in/$TEST"
     mkdir -p /tmp/sd
     for i in $(seq 1 10); do
-        AFL_MAP_SIZE=2560000 afl-showmap -m none -t 2000 -o "/tmp/sd/m$i" -- ./harness_skia_fast < "$TEST" 2>/dev/null
+        AFL_MAP_SIZE=2560000 afl-showmap -m none -t 5000 -o "/tmp/sd/m$i" -- ./harness_skia_fast < "$TEST" 2>/dev/null
     done
     BASE=$(wc -l < /tmp/sd/m1 2>/dev/null)
     echo "    Run | Diff | Stability"
@@ -827,14 +787,14 @@ ENVEOF
     AENV="export ASAN_OPTIONS='detect_leaks=0:symbolize=0:abort_on_error=1:detect_odr_violation=0'"
     UENV="export UBSAN_OPTIONS='halt_on_error=0:print_stacktrace=0:silence_unsigned_overflow=1'"
 
-    launch "master"   "$AENV" "harness_skia_asan"  "-M master -l 2 -c ./harness_skia_cmplog -t 5000+"
-    launch "ubsan"    "$UENV" "harness_skia_ubsan"  "-S ubsan -p explore -t 5000+"
-    launch "asan_exp" "$AENV" "harness_skia_asan"   "-S asan_exp -p explore -t 5000+"
-    launch "fast_4"   ""      "harness_skia_fast"   "-S fast_4 -p fast -t 2000"
-    launch "fast_5"   ""      "harness_skia_fast"   "-S fast_5 -p rare -t 2000"
-    launch "fast_6"   ""      "harness_skia_fast"   "-S fast_6 -p seek -t 2000"
-    launch "fast_7"   ""      "harness_skia_fast"   "-S fast_7 -p coe -t 2000"
-    launch "fast_8"   ""      "harness_skia_fast"   "-S fast_8 -p exploit -t 2000"
+    launch "master"       "$AENV" "harness_skia_asan"  "-M master -l 2 -c ./harness_skia_cmplog -t 5000+"
+    launch "ubsan"        "$UENV" "harness_skia_ubsan"  "-S ubsan -p explore -t 5000+"
+    launch "asan_explore" "$AENV" "harness_skia_asan"   "-S asan_explore -p explore -t 5000+"
+    launch "fast_4"       ""      "harness_skia_fast"   "-S fast_4 -p fast -t 5000+"
+    launch "fast_5"       ""      "harness_skia_fast"   "-S fast_5 -p rare -t 5000+"
+    launch "fast_6"       ""      "harness_skia_fast"   "-S fast_6 -p seek -t 5000+"
+    launch "fast_7"       ""      "harness_skia_fast"   "-S fast_7 -p coe -t 5000+"
+    launch "fast_8"       ""      "harness_skia_fast"   "-S fast_8 -p exploit -t 5000+"
 
     sleep 3
     ALIVE=$(screen -ls 2>/dev/null | grep -c "Detached" || echo 0)
@@ -872,26 +832,10 @@ esac
 
 echo ""
 echo "================================================================"
-echo "[DONE] SKIA PRODUCTION FUZZER v9.0"
+echo "[DONE] SKIA FUZZER v9.1"
 echo "================================================================"
 echo ""
-echo "COMMANDS:"
-echo "  Monitor:     watch -n 2 afl-whatsup -s -d $WORKDIR/out"
-echo "  Crashes:     ls -la $WORKDIR/out/*/crashes/"
-echo "  View UI:     screen -r master"
-echo "  Detach:      Ctrl+A, D"
-echo "  Resume:      $0 --resume"
-echo "  Triage:      $0 --triage"
-echo "  Stability:   $0 --diagnose"
-echo ""
-echo "SWARM:"
-echo "  master       ASAN + CmpLog + Deterministic  (bug finder)"
-echo "  ubsan        UBSan + explore                 (int overflow/UB)"
-echo "  asan_explore ASAN + explore                  (memory bugs)"
-echo "  fast_4-8     Persistent mode + schedules     (ammo generators)"
-echo ""
-echo "BINARIES:"
-echo "  harness_skia_fast    Speed (persistent, no sanitizers)"
-echo "  harness_skia_asan    AddressSanitizer (heap/stack/UAF)"
-echo "  harness_skia_ubsan   UBSan (int overflow, null deref)"
-echo "  harness_skia_cmplog  CmpLog (magic byte cracking)"
+echo "Monitor:  cd ~/skia_fuzzing && watch -n 2 afl-whatsup -s -d out"
+echo "Attach:   screen -r master"
+echo "Triage:   $0 --triage"
+echo "Status:   $0 --diagnose"
