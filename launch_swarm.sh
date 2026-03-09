@@ -281,7 +281,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             // Tighten limits and use tryAllocPixels + NULL check
             if (info.width() > 0 && info.height() > 0 &&
                 info.width() <= 2048 && info.height() <= 2048 &&
-                (int64_t)info.computeByteSize() <= 16*1024*1024) {
+                (int64_t)info.computeByteSize(info.minRowBytes()) <= 16*1024*1024) {
                 SkBitmap bm;
                 if (bm.tryAllocPixels(info.makeColorType(kN32_SkColorType))) {
                     memset(bm.getPixels(), 0, bm.computeByteSize());
@@ -292,7 +292,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 if (c2) {
                     auto info2 = c2->getInfo();
                     if (info2.width() <= 2048 && info2.height() <= 2048 &&
-                        (int64_t)info2.computeByteSize() <= 16*1024*1024) {
+                        (int64_t)info2.computeByteSize(info2.minRowBytes()) <= 16*1024*1024) {
                         SkBitmap bm2;
                         if (bm2.tryAllocPixels(info2.makeColorType(kN32_SkColorType))) {
                             memset(bm2.getPixels(), 0, bm2.computeByteSize());
