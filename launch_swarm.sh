@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# SKIA AFL++ FUZZER v8.1 — FINAL
+# SKIA AFL++ FUZZER v9.0 — PRODUCTION
 #
-# 12 methodology-driven targets, all API-compatible with latest Skia HEAD
+# 13 methodology-driven targets, API-compatible with latest Skia HEAD
 # All compilation errors resolved, all 8 nodes stable
 #
 # USAGE:
@@ -17,7 +17,7 @@ MODE="${1:-full}"
 WORKDIR="$HOME/skia_fuzzing"
 
 echo "================================================================"
-echo "[*] SKIA FUZZER v8.1"
+echo "[*] SKIA FUZZER v9.0"
 echo "    Mode: $MODE"
 echo "================================================================"
 
@@ -57,12 +57,12 @@ phase_workspace() {
 }
 
 # =====================================================================
-# PHASE 3: HARNESS (12 targets)
+# PHASE 3: HARNESS (13 targets)
 # =====================================================================
 phase_harness() {
     echo "[+] Phase 3: Writing harness..."
     cat << 'HARNESS_EOF' > "$WORKDIR/skia_harness.cc"
-// Skia Fuzz Harness v8.1 — 12 methodology-driven targets
+// Skia Fuzz Harness v9.0 — 13 methodology-driven targets
 //
 // Vulnerability patterns targeted:
 //   [0]  Extreme path rendering     — rasterizer integer overflow
@@ -102,11 +102,11 @@ phase_harness() {
 #include "include/core/SkBitmap.h"
 #include "include/core/SkVertices.h"
 #include "include/core/SkTextBlob.h"
+#include "include/core/SkString.h"
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
 #include "include/effects/SkRuntimeEffect.h"
-#include "include/core/SkString.h"
 #include "include/codec/SkCodec.h"
 
 #include <unistd.h>
@@ -159,7 +159,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     SkCanvas* canvas = surface->getCanvas();
     canvas->clear(SK_ColorTRANSPARENT);
 
-    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 11);
+    uint8_t target = fdp.ConsumeIntegralInRange<uint8_t>(0, 12);
 
     switch (target) {
 
@@ -278,7 +278,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto codec = SkCodec::MakeFromData(skdata);
         if (codec) {
             auto info = codec->getInfo();
-            // Tighten limits and use tryAllocPixels + NULL check
             if (info.width() > 0 && info.height() > 0 &&
                 info.width() <= 2048 && info.height() <= 2048 &&
                 (int64_t)info.computeByteSize(info.minRowBytes()) <= 16*1024*1024) {
@@ -339,7 +338,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // [5] SkPicture ROUND-TRIP
     case 5: {
-        if (size > 100 * 1024) break; // Limit SkPicture size to avoid OOM/Hangs
+        if (size > 100 * 1024) break;
         auto fuzzData = SkData::MakeWithoutCopy(data, size);
         auto pic = SkPicture::MakeFromData(fuzzData.get());
         if (pic) {
@@ -365,14 +364,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         bool hasTexs = fdp.ConsumeBool();
         if (hasCols) flags |= SkVertices::kHasColors_BuilderFlag;
         if (hasTexs) flags |= SkVertices::kHasTexCoords_BuilderFlag;
-        
-        // Consume data into vectors first to get the REAL count
+
         std::vector<SkPoint> pos;
         std::vector<SkColor> col;
         std::vector<SkPoint> tex;
         int bytes_per_v = 8 + (hasCols ? 4 : 0) + (hasTexs ? 8 : 0);
-        
-        for (int i = 0; i < max_vc && fdp.remaining_bytes() >= bytes_per_v; ++i) {
+
+        for (int i = 0; i < max_vc && (int)fdp.remaining_bytes() >= bytes_per_v; ++i) {
             pos.push_back({fdp.ConsumeFloatingPointInRange<float>(-500, 500),
                            fdp.ConsumeFloatingPointInRange<float>(-500, 500)});
             if (hasCols) col.push_back(fdp.ConsumeIntegral<SkColor>());
@@ -381,7 +379,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
 
         if (pos.size() < 3) break;
-        
+
         SkVertices::Builder builder(vmode, pos.size(), 0, flags);
         for (size_t i = 0; i < pos.size(); ++i) {
             builder.positions()[i] = pos[i];
@@ -395,7 +393,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
             int reps = fdp.ConsumeIntegralInRange<int>(1, 10);
             for (int i = 0; i < reps; ++i)
-                canvas->drawVertices(verts, 
+                canvas->drawVertices(verts,
                     static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)), paint);
         }
         break;
@@ -422,7 +420,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             acc = SkMatrix::Concat(acc, m2);
         }
         if (!acc.isFinite() || acc.isIdentity()) break;
-        // Check for extreme scaling that might crash text renderer
         float scale = acc.getMaxScale();
         if (scale < 0.001f || scale > 1000.0f) break;
 
@@ -508,9 +505,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     // [10] TEXT RENDERING STRESS
-    // Exercises font/glyph subsystem with fuzzed parameters: sizes,
-    // scale, skew, transforms. Uses default typeface to avoid API
-    // incompatibility with SkTypeface::MakeFrom* methods.
     case 10: {
         SkFont font;
         font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 100.0f));
@@ -521,7 +515,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setAntiAlias(fdp.ConsumeBool());
-        
+
         std::string text = fdp.ConsumeRandomLengthString(64);
         if (!text.empty()) {
             canvas->drawSimpleText(text.c_str(), text.length(), SkTextEncoding::kUTF8,
@@ -532,12 +526,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
-
     // [11] CONVEXITY CONFUSION
-    // Build paths that are *nearly* convex — a single segment that barely
-    // makes the path concave. If Skia misidentifies this as convex, it
-    // uses a fast convex-only algorithm that doesn't handle concave edges,
-    // leading to memory corruption. (Google Project Zero technique)
     case 11: {
         SkPaint paint;
         paint.setAntiAlias(fdp.ConsumeBool());
@@ -578,7 +567,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     case 12: {
         std::string sksl = fdp.ConsumeRandomLengthString(512);
         if (sksl.empty()) break;
-        // Prefix with a minimal valid signature to help the fuzzer
         std::string full_sksl = "half4 main(float2 p) { " + sksl + " \n return half4(1); }";
         auto [effect, error] = SkRuntimeEffect::MakeForShader(SkString(full_sksl.c_str()));
         if (effect) {
@@ -711,11 +699,8 @@ phase_corpus() {
         find skia/resources/ -name "*.jpg" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.webp" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.gif" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        # Smart Seeds: One for each of the 13 targets to guide the fuzzer
         for i in $(seq 0 12); do
-            # Format byte as hex (0-12)
             printf "\\x$(printf %02x $i)" > "in/seed_$i.bin"
-            # Add 64 bytes of "junk" to keep the mutator happy
             head -c 64 /dev/urandom >> "in/seed_$i.bin"
         done
         echo "    Seeded: $(ls -1 in/ | wc -l) smart files"
@@ -729,7 +714,7 @@ phase_compile() {
 
     build_target() {
         local N=$1 BIN=$2 GN=$3 CXX=$4 ENV=$5
-        rm -f "../$BIN" # Force rebuild to ensure Case 12 is included
+        rm -f "../$BIN"
         echo "    -> $N..."
         eval "$ENV bin/gn gen out/$N --args='$GN' >/dev/null"
         eval "$ENV ninja -j$(nproc) -C out/$N skia >/dev/null"
@@ -812,15 +797,12 @@ phase_launch() {
     echo "[+] Phase 10: Launching Swarm..."
     cd "$WORKDIR"
 
-    # Kill everything cleanly
     pkill -9 afl-fuzz 2>/dev/null || true
     sleep 1
     screen -wipe 2>/dev/null || true
 
-    # Build dictionary flag
     DICT="-x dictionaries/skia.dict"
 
-    # Common env
     cat > /tmp/afl_env.sh << ENVEOF
 export AFL_AUTORESUME=1
 export AFL_IMPORT_FIRST=1
@@ -890,10 +872,26 @@ esac
 
 echo ""
 echo "================================================================"
-echo "[DONE] SKIA FUZZER v8.1"
+echo "[DONE] SKIA PRODUCTION FUZZER v9.0"
 echo "================================================================"
 echo ""
-echo "Monitor:  cd ~/skia_fuzzing && watch -n 2 afl-whatsup -s -d out"
-echo "Attach:   screen -r master"
-echo "Triage:   $0 --triage"
-echo "Status:   $0 --diagnose"
+echo "COMMANDS:"
+echo "  Monitor:     watch -n 2 afl-whatsup -s -d $WORKDIR/out"
+echo "  Crashes:     ls -la $WORKDIR/out/*/crashes/"
+echo "  View UI:     screen -r master"
+echo "  Detach:      Ctrl+A, D"
+echo "  Resume:      $0 --resume"
+echo "  Triage:      $0 --triage"
+echo "  Stability:   $0 --diagnose"
+echo ""
+echo "SWARM:"
+echo "  master       ASAN + CmpLog + Deterministic  (bug finder)"
+echo "  ubsan        UBSan + explore                 (int overflow/UB)"
+echo "  asan_explore ASAN + explore                  (memory bugs)"
+echo "  fast_4-8     Persistent mode + schedules     (ammo generators)"
+echo ""
+echo "BINARIES:"
+echo "  harness_skia_fast    Speed (persistent, no sanitizers)"
+echo "  harness_skia_asan    AddressSanitizer (heap/stack/UAF)"
+echo "  harness_skia_ubsan   UBSan (int overflow, null deref)"
+echo "  harness_skia_cmplog  CmpLog (magic byte cracking)"
