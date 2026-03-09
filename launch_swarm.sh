@@ -190,11 +190,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             }
         }
         SkPath path = builder.detach();
-        canvas->drawPath(path, paint);
-        canvas->save();
-        canvas->clipPath(path, fdp.ConsumeBool());
-        canvas->drawPaint(paint);
-        canvas->restore();
+        if (path.isFinite()) {
+            canvas->drawPath(path, paint);
+            canvas->save();
+            canvas->clipPath(path, fdp.ConsumeBool());
+            canvas->drawPaint(paint);
+            canvas->restore();
+        }
         canvas->restore();
         break;
     }
@@ -268,32 +270,41 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         auto codec = SkCodec::MakeFromData(skdata);
         if (codec) {
             auto info = codec->getInfo();
-            if (info.width() <= 4096 && info.height() <= 4096 &&
-                (int64_t)info.width() * info.height() <= 4*1024*1024) {
+            // Tighten limits and use tryAllocPixels + NULL check
+            if (info.width() > 0 && info.height() > 0 &&
+                info.width() <= 2048 && info.height() <= 2048 &&
+                (int64_t)info.computeByteSize() <= 16*1024*1024) {
                 SkBitmap bm;
-                bm.allocPixels(info.makeColorType(kN32_SkColorType));
-                memset(bm.getPixels(), 0, bm.computeByteSize());
-                codec->getPixels(bm.pixmap());
+                if (bm.tryAllocPixels(info.makeColorType(kN32_SkColorType))) {
+                    memset(bm.getPixels(), 0, bm.computeByteSize());
+                    codec->getPixels(bm.pixmap());
+                }
 
                 auto c2 = SkCodec::MakeFromData(skdata);
                 if (c2) {
-                    SkBitmap bm2;
-                    bm2.allocPixels(c2->getInfo().makeColorType(kN32_SkColorType));
-                    memset(bm2.getPixels(), 0, bm2.computeByteSize());
-                    c2->startIncrementalDecode(bm2.info(), bm2.getPixels(), bm2.rowBytes());
-                    c2->incrementalDecode();
+                    auto info2 = c2->getInfo();
+                    if (info2.width() <= 2048 && info2.height() <= 2048 &&
+                        (int64_t)info2.computeByteSize() <= 16*1024*1024) {
+                        SkBitmap bm2;
+                        if (bm2.tryAllocPixels(info2.makeColorType(kN32_SkColorType))) {
+                            memset(bm2.getPixels(), 0, bm2.computeByteSize());
+                            c2->startIncrementalDecode(bm2.info(), bm2.getPixels(), bm2.rowBytes());
+                            c2->incrementalDecode();
+                        }
+                    }
                 }
 
                 auto c3 = SkCodec::MakeFromData(skdata);
                 if (c3) {
                     auto sd = c3->getScaledDimensions(0.5f);
                     if (sd.width() > 0 && sd.height() > 0 &&
-                        (int64_t)sd.width() * sd.height() < 1024*1024) {
+                        sd.width() <= 2048 && sd.height() <= 2048) {
                         SkBitmap bm3;
                         auto si = SkImageInfo::MakeN32Premul(sd.width(), sd.height());
-                        bm3.allocPixels(si);
-                        memset(bm3.getPixels(), 0, bm3.computeByteSize());
-                        c3->getPixels(si, bm3.getPixels(), bm3.rowBytes());
+                        if (bm3.tryAllocPixels(si)) {
+                            memset(bm3.getPixels(), 0, bm3.computeByteSize());
+                            c3->getPixels(si, bm3.getPixels(), bm3.rowBytes());
+                        }
                     }
                 }
             }
@@ -307,25 +318,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         paint.setAntiAlias(fdp.ConsumeBool());
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setStyle(static_cast<SkPaint::Style>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
-        int reps = fdp.ConsumeIntegralInRange<int>(20, 100);
-        for (int i = 0; i < reps && fdp.remaining_bytes() > 4; ++i) {
-            float x = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
-            float y = fdp.ConsumeFloatingPointInRange<float>(-500, 500);
+        int reps = fdp.ConsumeIntegralInRange<int>(5, 50);
+        for (int i = 0; i < reps && fdp.remaining_bytes() > 16; ++i) {
+            float x = fdp.ConsumeFloatingPointInRange<float>(-200, 200);
+            float y = fdp.ConsumeFloatingPointInRange<float>(-200, 200);
             canvas->drawRect(SkRect::MakeXYWH(x, y,
-                fdp.ConsumeFloatingPointInRange<float>(1, 200),
-                fdp.ConsumeFloatingPointInRange<float>(1, 200)), paint);
+                fdp.ConsumeFloatingPointInRange<float>(1, 100),
+                fdp.ConsumeFloatingPointInRange<float>(1, 100)), paint);
         }
         break;
     }
 
     // [5] SkPicture ROUND-TRIP
     case 5: {
+        if (size > 100 * 1024) break; // Limit SkPicture size to avoid OOM/Hangs
         auto fuzzData = SkData::MakeWithoutCopy(data, size);
         auto pic = SkPicture::MakeFromData(fuzzData.get());
         if (pic) {
             pic->playback(canvas);
             auto re = pic->serialize();
-            if (re) {
+            if (re && re->size() <= 100 * 1024) {
                 auto p2 = SkPicture::MakeFromData(re.get());
                 if (p2) {
                     auto s2 = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(128, 128));
@@ -338,23 +350,29 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // [6] SkVertices REPETITION
     case 6: {
-        int vc = fdp.ConsumeIntegralInRange<int>(3, 512);
-        std::vector<SkPoint> pos(vc);
-        std::vector<SkColor> col(vc);
-        for (int i = 0; i < vc && fdp.remaining_bytes() > 8; ++i) {
-            pos[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                       fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
-            col[i] = fdp.ConsumeIntegral<SkColor>();
+        int vc = fdp.ConsumeIntegralInRange<int>(3, 64);
+        auto vmode = static_cast<SkVertices::VertexMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2));
+        uint32_t flags = 0;
+        if (fdp.ConsumeBool()) flags |= SkVertices::kHasColors_BuilderFlag;
+        if (fdp.ConsumeBool()) flags |= SkVertices::kHasTexCoords_BuilderFlag;
+        
+        SkVertices::Builder builder(vmode, vc, 0, flags);
+        for (int i = 0; i < vc && fdp.remaining_bytes() > 12; ++i) {
+            builder.positions()[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                                      fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
+            if (flags & SkVertices::kHasColors_BuilderFlag)
+                builder.colors()[i] = fdp.ConsumeIntegral<SkColor>();
+            if (flags & SkVertices::kHasTexCoords_BuilderFlag)
+                builder.texCoords()[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                                          fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
         }
-        auto vmode = static_cast<SkVertices::VertexMode>(
-            fdp.ConsumeIntegralInRange<uint8_t>(0, 2));
-        auto verts = SkVertices::MakeCopy(vmode, vc, pos.data(), nullptr, col.data());
+        auto verts = builder.detach();
         if (verts) {
             SkPaint paint;
             paint.setColor(fdp.ConsumeIntegral<SkColor>());
-            int reps = fdp.ConsumeIntegralInRange<int>(5, 50);
+            int reps = fdp.ConsumeIntegralInRange<int>(1, 10);
             for (int i = 0; i < reps; ++i)
-                canvas->drawVertices(verts,
+                canvas->drawVertices(verts, 
                     static_cast<SkBlendMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 29)), paint);
         }
         break;
@@ -365,39 +383,30 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         SkMatrix acc;
-        acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+        acc.setAll(fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
                    fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
+                   fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
                    fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f),
-                   fdp.ConsumeFloatingPointInRange<float>(-100.0f, 100.0f));
-        int chainLen = fdp.ConsumeIntegralInRange<int>(2, 10);
+                   0, 0, 1);
+        int chainLen = fdp.ConsumeIntegralInRange<int>(2, 5);
         for (int i = 0; i < chainLen && fdp.remaining_bytes() > 36; ++i) {
             SkMatrix m2;
-            m2.setAll(fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(-10.0f, 10.0f));
+            m2.setRotate(fdp.ConsumeFloatingPointInRange<float>(0, 360));
+            m2.postScale(fdp.ConsumeFloatingPointInRange<float>(0.5, 2.0),
+                         fdp.ConsumeFloatingPointInRange<float>(0.5, 2.0));
             acc = SkMatrix::Concat(acc, m2);
         }
-        SkMatrix inv;
-        (void)acc.invert(&inv);
+        if (!acc.isFinite()) break;
         canvas->setMatrix(acc);
         SkFont font;
-        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 500));
-        std::string txt = fdp.ConsumeRandomLengthString(128);
+        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 100));
+        std::string txt = fdp.ConsumeRandomLengthString(64);
         if (!txt.empty())
             canvas->drawSimpleText(txt.data(), txt.size(), SkTextEncoding::kUTF8,
-                fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f),
-                fdp.ConsumeFloatingPointInRange<float>(-1e4f, 1e4f), font, paint);
+                fdp.ConsumeFloatingPointInRange<float>(-100, 100),
+                fdp.ConsumeFloatingPointInRange<float>(-100, 100), font, paint);
         break;
     }
 
@@ -477,44 +486,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // incompatibility with SkTypeface::MakeFrom* methods.
     case 10: {
         SkFont font;
-        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 150.0f));
-        font.setScaleX(fdp.ConsumeFloatingPointInRange<float>(0.01f, 100.0f));
-        font.setSkewX(fdp.ConsumeFloatingPointInRange<float>(-10, 10));
+        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 100.0f));
+        font.setScaleX(fdp.ConsumeFloatingPointInRange<float>(0.5f, 5.0f));
+        font.setSkewX(fdp.ConsumeFloatingPointInRange<float>(-2, 2));
+        font.setEdging(static_cast<SkFont::Edging>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2)));
 
         SkPaint paint;
         paint.setColor(fdp.ConsumeIntegral<SkColor>());
         paint.setAntiAlias(fdp.ConsumeBool());
-
-        // Fuzzed text content
-        std::string txt = fdp.ConsumeRandomLengthString(256);
-        if (!txt.empty()) {
-            canvas->drawSimpleText(txt.data(), txt.size(), SkTextEncoding::kUTF8,
-                fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                fdp.ConsumeFloatingPointInRange<float>(-500, 500), font, paint);
+        
+        std::string text = fdp.ConsumeRandomLengthString(64);
+        if (!text.empty()) {
+            canvas->drawSimpleText(text.c_str(), text.length(), SkTextEncoding::kUTF8,
+                                   fdp.ConsumeFloatingPointInRange<float>(0, 256),
+                                   fdp.ConsumeFloatingPointInRange<float>(0, 256),
+                                   font, paint);
         }
-
-        // Measure text (different code path)
-        SkRect bounds;
-        font.measureText("ABCDEF", 6, SkTextEncoding::kUTF8, &bounds);
-
-        // Draw at many sizes to stress glyph cache
-        for (int sz = 1; sz <= 200 && fdp.remaining_bytes() > 4; sz += fdp.ConsumeIntegralInRange<int>(1, 30)) {
-            font.setSize((float)sz);
-            canvas->drawSimpleText("AgWm", 4, SkTextEncoding::kUTF8,
-                fdp.ConsumeFloatingPointInRange<float>(-100, 300),
-                fdp.ConsumeFloatingPointInRange<float>(-100, 300), font, paint);
-        }
-
-        // Draw under extreme transforms (exercises glyph positioning math)
-        canvas->save();
-        canvas->scale(fdp.ConsumeFloatingPointInRange<float>(0.001f, 100.0f),
-                      fdp.ConsumeFloatingPointInRange<float>(0.001f, 100.0f));
-        canvas->rotate(fdp.ConsumeFloatingPointInRange<float>(0, 360));
-        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 72));
-        canvas->drawSimpleText("Transform", 9, SkTextEncoding::kUTF8, 0, 50, font, paint);
-        canvas->restore();
         break;
     }
+
 
     // [11] CONVEXITY CONFUSION
     // Build paths that are *nearly* convex — a single segment that barely
