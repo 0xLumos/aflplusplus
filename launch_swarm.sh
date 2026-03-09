@@ -106,6 +106,7 @@ phase_harness() {
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
 #include "include/effects/SkRuntimeEffect.h"
+#include "include/core/SkString.h"
 #include "include/codec/SkCodec.h"
 
 #include <unistd.h>
@@ -709,11 +710,11 @@ phase_compile() {
 
     build_target() {
         local N=$1 BIN=$2 GN=$3 CXX=$4 ENV=$5
-        if [ -f "$WORKDIR/$BIN" ]; then echo "    $N: EXISTS"; return; fi
+        rm -f "../$BIN" # Force rebuild to ensure Case 12 is included
         echo "    -> $N..."
-        eval "$ENV bin/gn gen out/$N --args='$GN'"
-        eval "$ENV ninja -j$(nproc) -C out/$N skia"
-        eval "$ENV afl-clang-fast++ $CXX -I. ../skia_harness.cc out/$N/libskia.a -o ../$BIN -lpthread -ldl -lfreetype -lfontconfig"
+        eval "$ENV bin/gn gen out/$N --args='$GN' >/dev/null"
+        eval "$ENV ninja -j$(nproc) -C out/$N skia >/dev/null"
+        eval "$ENV afl-clang-fast++ -std=c++17 $CXX -I. ../skia_harness.cc out/$N/libskia.a -o ../$BIN -lpthread -ldl -lfreetype -lfontconfig"
     }
 
     build_target "Fast" "harness_skia_fast" \
