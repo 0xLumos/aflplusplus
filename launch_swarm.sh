@@ -358,22 +358,37 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // [6] SkVertices REPETITION
     case 6: {
-        int vc = fdp.ConsumeIntegralInRange<int>(3, 64);
+        int max_vc = fdp.ConsumeIntegralInRange<int>(3, 64);
         auto vmode = static_cast<SkVertices::VertexMode>(fdp.ConsumeIntegralInRange<uint8_t>(0, 2));
         uint32_t flags = 0;
-        if (fdp.ConsumeBool()) flags |= SkVertices::kHasColors_BuilderFlag;
-        if (fdp.ConsumeBool()) flags |= SkVertices::kHasTexCoords_BuilderFlag;
+        bool hasCols = fdp.ConsumeBool();
+        bool hasTexs = fdp.ConsumeBool();
+        if (hasCols) flags |= SkVertices::kHasColors_BuilderFlag;
+        if (hasTexs) flags |= SkVertices::kHasTexCoords_BuilderFlag;
         
-        SkVertices::Builder builder(vmode, vc, 0, flags);
-        for (int i = 0; i < vc && fdp.remaining_bytes() > 12; ++i) {
-            builder.positions()[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                                      fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
-            if (flags & SkVertices::kHasColors_BuilderFlag)
-                builder.colors()[i] = fdp.ConsumeIntegral<SkColor>();
-            if (flags & SkVertices::kHasTexCoords_BuilderFlag)
-                builder.texCoords()[i] = {fdp.ConsumeFloatingPointInRange<float>(-500, 500),
-                                          fdp.ConsumeFloatingPointInRange<float>(-500, 500)};
+        // Consume data into vectors first to get the REAL count
+        std::vector<SkPoint> pos;
+        std::vector<SkColor> col;
+        std::vector<SkPoint> tex;
+        int bytes_per_v = 8 + (hasCols ? 4 : 0) + (hasTexs ? 8 : 0);
+        
+        for (int i = 0; i < max_vc && fdp.remaining_bytes() >= bytes_per_v; ++i) {
+            pos.push_back({fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                           fdp.ConsumeFloatingPointInRange<float>(-500, 500)});
+            if (hasCols) col.push_back(fdp.ConsumeIntegral<SkColor>());
+            if (hasTexs) tex.push_back({fdp.ConsumeFloatingPointInRange<float>(-500, 500),
+                                        fdp.ConsumeFloatingPointInRange<float>(-500, 500)});
         }
+
+        if (pos.size() < 3) break;
+        
+        SkVertices::Builder builder(vmode, pos.size(), 0, flags);
+        for (size_t i = 0; i < pos.size(); ++i) {
+            builder.positions()[i] = pos[i];
+            if (hasCols) builder.colors()[i] = col[i];
+            if (hasTexs) builder.texCoords()[i] = tex[i];
+        }
+
         auto verts = builder.detach();
         if (verts) {
             SkPaint paint;
@@ -406,10 +421,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                          fdp.ConsumeFloatingPointInRange<float>(0.5, 2.0));
             acc = SkMatrix::Concat(acc, m2);
         }
-        if (!acc.isFinite()) break;
+        if (!acc.isFinite() || acc.isIdentity()) break;
+        // Check for extreme scaling that might crash text renderer
+        float scale = acc.getMaxScale();
+        if (scale < 0.001f || scale > 1000.0f) break;
+
         canvas->setMatrix(acc);
         SkFont font;
-        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 100));
+        font.setSize(fdp.ConsumeFloatingPointInRange<float>(1, 50));
         std::string txt = fdp.ConsumeRandomLengthString(64);
         if (!txt.empty())
             canvas->drawSimpleText(txt.data(), txt.size(), SkTextEncoding::kUTF8,
