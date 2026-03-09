@@ -77,6 +77,7 @@ phase_harness() {
 //   [9]  Nested clip+layer stack    — layer bounds allocation errors
 //   [10] Text rendering stress      — font/glyph path fuzzing
 //   [11] Convexity confusion        — nearly-convex paths drawn as convex
+//   [12] SkSL Runtime Effects       — shader compiler/VM stress
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
@@ -104,6 +105,7 @@ phase_harness() {
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkDashPathEffect.h"
+#include "include/effects/SkRuntimeEffect.h"
 #include "include/codec/SkCodec.h"
 
 #include <unistd.h>
@@ -145,7 +147,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size < 32) return 0;
     FuzzedDataProvider fdp(data, size);
 
-    constexpr int kW = 256, kH = 256;
+    int kW = 256, kH = 256;
+    if (fdp.remaining_bytes() > 8 && fdp.ConsumeBool()) {
+        kW = fdp.ConsumeIntegralInRange<int>(32, 2048);
+        kH = fdp.ConsumeIntegralInRange<int>(32, 2048);
+        if ((int64_t)kW * kH > 4096 * 1024) { kW = 256; kH = 256; }
+    }
     auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(kW, kH));
     if (!surface) return 0;
     SkCanvas* canvas = surface->getCanvas();
@@ -547,11 +554,29 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     }
 
+    // [12] SkSL RUNTIME EFFECTS
+    case 12: {
+        std::string sksl = fdp.ConsumeRandomLengthString(512);
+        if (sksl.empty()) break;
+        // Prefix with a minimal valid signature to help the fuzzer
+        std::string full_sksl = "half4 main(float2 p) { " + sksl + " \n return half4(1); }";
+        auto [effect, error] = SkRuntimeEffect::MakeForShader(SkString(full_sksl.c_str()));
+        if (effect) {
+            auto shader = effect->makeShader(nullptr, {}, nullptr);
+            if (shader) {
+                SkPaint p;
+                p.setShader(std::move(shader));
+                canvas->drawPaint(p);
+            }
+        }
+        break;
+    }
+
     } // switch
     return 0;
 }
 HARNESS_EOF
-    echo "    Harness: 12 targets"
+    echo "    Harness: 13 targets"
 }
 
 # =====================================================================
@@ -578,6 +603,20 @@ header_bmp="BM"
 header_webp="RIFF"
 header_ico="\x00\x00\x01\x00"
 header_skp="skiapict"
+sksl_main="half4 main(float2 p)"
+sksl_return="return"
+sksl_float="float"
+sksl_half="half"
+sksl_vec2="vec2"
+sksl_vec3="vec3"
+sksl_vec4="vec4"
+sksl_sample="sample"
+sksl_uniform="uniform"
+sksl_in="in"
+sksl_out="out"
+sksl_if="if"
+sksl_else="else"
+sksl_for="for"
 float_zero="\x00\x00\x00\x00"
 float_one="\x00\x00\x80\x3f"
 float_inf="\x00\x00\x80\x7f"
@@ -617,6 +656,10 @@ prop_style="Style"
 prop_filter="ImageFilter"
 prop_shader="Shader"
 prop_font="Font"
+prop_mask="MaskFilter"
+prop_path="PathEffect"
+prop_blender="Blender"
+prop_runtime="RuntimeEffect"
 EOF
     echo "    Dict: skia.dict"
 }
@@ -648,8 +691,14 @@ phase_corpus() {
         find skia/resources/ -name "*.jpg" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.webp" -size -10k -exec cp {} in/ \; 2>/dev/null || true
         find skia/resources/ -name "*.gif" -size -10k -exec cp {} in/ \; 2>/dev/null || true
-        echo "skia_fuzz_seed" > in/seed.txt
-        echo "    Seeded: $(ls -1 in/ | wc -l) files"
+        # Smart Seeds: One for each of the 13 targets to guide the fuzzer
+        for i in $(seq 0 12); do
+            # Format byte as hex (0-12)
+            printf "\\x$(printf %02x $i)" > "in/seed_$i.bin"
+            # Add 64 bytes of "junk" to keep the mutator happy
+            head -c 64 /dev/urandom >> "in/seed_$i.bin"
+        done
+        echo "    Seeded: $(ls -1 in/ | wc -l) smart files"
     fi
 }
 
